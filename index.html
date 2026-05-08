@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>OmniSymbiote</title>
+  <style>
+    /* — Mobile‑first strictness, no scrolling — */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100dvh; overflow: hidden; background: #0a0a0a; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      display: flex; flex-direction: column;
+    }
+
+    /* — Organic “Symbiote” background — */
+    .bg-symbiote {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(ellipse at 30% 20%, #1a0e22, #000 70%),
+                  radial-gradient(ellipse at 70% 80%, #0e1a22, transparent 60%);
+      filter: contrast(1.1);
+      z-index: 0;
+    }
+
+    /* — Bottom 35% glass panel (iOS 17 frosted glass) — */
+    .bottom-panel {
+      position: fixed; bottom: 0; left: 0; width: 100%; height: 35dvh;
+      background: rgba(18,18,22,0.6);
+      backdrop-filter: blur(30px) saturate(180%);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      border-top: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 -10px 30px rgba(0,0,0,0.5);
+      z-index: 2;
+      display: flex; flex-direction: column;
+      padding: 12px 8px 8px;
+    }
+
+    /* — Swipeable horizontal tab strip — */
+    .tabs-scroll {
+      flex: 1;
+      overflow-x: auto; overflow-y: hidden;
+      display: flex; gap: 12px;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 4px;
+    }
+    .tabs-scroll::-webkit-scrollbar { display: none; }
+
+    /* — Individual module card — */
+    .tab-card {
+      min-width: 80vw; max-width: 85vw;
+      height: 100%;
+      background: rgba(255,255,255,0.06);
+      border-radius: 24px;
+      padding: 14px 18px;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 10px;
+      scroll-snap-align: center;
+      border: 1px solid rgba(255,255,255,0.05);
+      box-shadow: inset 0 0 20px rgba(0,0,0,0.3);
+      transition: background 0.2s;
+    }
+
+    .module-name {
+      color: #e0e0e0; font-weight: 600; font-size: 1.1rem;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+
+    .slider-container {
+      width: 100%; display: flex; align-items: center; gap: 8px;
+    }
+    input[type=range] {
+      flex: 1; height: 6px; -webkit-appearance: none;
+      background: rgba(255,255,255,0.15); border-radius: 3px; outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 24px; height: 24px;
+      background: #ffffff; border-radius: 50%; border: 2px solid rgba(255,255,255,0.4);
+      box-shadow: 0 0 14px rgba(255,255,255,0.25);
+    }
+
+    .play-pause-btn {
+      background: rgba(255,255,255,0.12); border: none; color: #fff;
+      font-size: 1.3rem; width: 44px; height: 44px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(10px); transition: 0.2s;
+    }
+    .play-pause-btn.active { background: #6a4c93; }
+
+    /* — Auto button fixed in the panel — */
+    .auto-btn {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #4a3f6b, #2e2a4d);
+      color: #fff; border: none; padding: 12px 24px; border-radius: 30px;
+      font-weight: 700; letter-spacing: 1px; margin-top: 6px;
+      backdrop-filter: blur(10px); box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-symbiote"></div>
+
+  <div class="bottom-panel">
+    <div class="tabs-scroll" id="tabsContainer"></div>
+    <button class="auto-btn" id="autoButton">AUTO</button>
+  </div>
+
+  <script type="module" src="omni_core.js"></script>
+</body>
+</html>
