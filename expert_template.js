@@ -1,84 +1,81 @@
 /**
- * Blueprint for all future expert sound modules.
- * Every module must implement: init(audioCtx, wasmNode), toggle(state), setSlider(value).
- *
- * Communication with the Wasm engine happens through the AudioWorkletNode's MessagePort.
- * The slider (0.0–1.0) is mapped to a rich set of DSP parameters according to the
- * “Void / Normal / Overdrive” axis described in the brief.
+ * Expert Module – Cinematic Drone (Engine Type 0)
+ * Inherits standard interface: init(), toggle(), setSlider()
  */
 export class ExpertModuleTemplate {
-  /**
-   * @param {string} id   Unique identifier (e.g., "AmbientPad")
-   * @param {AudioContext} audioCtx
-   * @param {AudioWorkletNode} wasmNode - dedicated node that hosts the Wasm processor
-   */
+  constructor() {
+    this.id = '';
+    this.ctx = null;
+    this.node = null;      // AudioWorkletNode
+    this.gainNode = null;  // for zero‑pop volume
+    this.isActive = false;
+  }
+
   init(id, audioCtx, wasmNode) {
     this.id = id;
     this.ctx = audioCtx;
     this.node = wasmNode;
-    this.isActive = false;  // Play/Pause state
-    this.sliderValue = 0.5; // Default to Normal
 
-    // Connect the worklet node to destination (or to a master bus)
-    this.node.connect(this.ctx.destination);
+    // Zero‑pop volume control
+    this.gainNode = this.ctx.createGain();
+    this.gainNode.gain.value = 0;  // fade in later
+    this.node.connect(this.gainNode);
+    this.gainNode.connect(this.ctx.destination);
+
+    // Set engine type to 0 (Pad)
+    this.node.port.postMessage({ type: 'init', engineType: 0 });
   }
 
-  /**
-   * Toggle playback on (true) or off (false).
-   * Sends a simple on/off message to the processor.
-   */
   toggle(state) {
     this.isActive = state;
-    // The processor expects a message to enable/disable its internal sound generation.
+    const now = this.ctx.currentTime;
+    // Smooth gain ramp – no pops
+    this.gainNode.gain.cancelScheduledValues(now);
+    this.gainNode.gain.setTargetAtTime(state ? 1.0 : 0.0, now, 0.05);
+    // Also tell the Wasm processor to stop generating (saves CPU)
     this.node.port.postMessage({ type: 'setActive', active: state });
   }
 
   /**
-   * Receives a normalised slider value (0.0–1.0) and maps it to the
-   * “Void ← Normal → Overdrive” matrix.
-   *
-   * Mapping rules:
-   *   0.0  – 0.4  → Granular time‑stretching + heavy cathedral reverb
-   *   0.5         → Pure, untouched signal
-   *   0.6  – 1.0  → Overdrive, high‑pass filter, harmonic saturation
-   *
-   * The exact numerical parameters are sent to the AudioWorklet node,
-   * which then forwards them to the Wasm module.
+   * Slider mapping for Drone:
+   *   0.0‑0.4  → Deep pitch dive, heavy reverb, mellow warmth
+   *   0.5      → Pure, untouched signal (pitch = 1.0, no reverb)
+   *   0.6‑1.0  → Rising pitch, saturation, open high‑pass
    */
   setSlider(value) {
-    this.sliderValue = value;
     const s = Math.min(1, Math.max(0, value));
+    let pitch, reverb, hpFreq, sat;
 
-    // --- Parameter calculation ---
-
-    // Time stretch: 1.0 at normal, up to 10.0 at s=0.0
-    const stretch = (s <= 0.4) ? 1 + 9 * ((0.4 - s) / 0.4) : 1.0;
-
-    // Reverb mix: full wet at s=0, fading to dry by s=0.4; zero otherwise
-    const reverbMix = (s < 0.4) ? (0.4 - s) / 0.4 : 0.0;
-
-    // Overdrive region (0.6–1.0)
-    let highPassFreq = 0;   // 0 = bypassed in DSP
-    let saturation = 0;     // 0 = no drive
-    if (s >= 0.6) {
-      const t = (s - 0.6) / 0.4; // 0–1 in overdrive zone
-      // High‑pass rises from 30 Hz to 8000 Hz (exponential mapping)
-      highPassFreq = 30 * Math.pow(10, t * Math.log10(8000/30));
-      saturation = t;  // 0 → 1
+    if (s <= 0.4) {
+      // Void region – low, slow, cathedral
+      const t = s / 0.4; // 0..1
+      pitch = 1.0 - t * 0.9;          // 1.0 → 0.1
+      reverb = 0.8 * (1 - t) + 0.2;   // 0.8 .. 0.2? Actually heavy at low s: strong reverb
+      reverb = 0.9 - t * 0.5;         // 0.9 → 0.4
+      hpFreq = 30.0 + t * 100.0;      // muffled, gentle high‑pass
+      sat = 0.0;
+    } else if (s <= 0.6) {
+      // Normal zone
+      const t = (s - 0.4) / 0.2;
+      pitch = 1.0;
+      reverb = 0.2 - t * 0.2;          // 0.2 → 0.0
+      hpFreq = 100.0 + t * 200.0;
+      sat = 0.0;
+    } else {
+      // Overdrive / intensity
+      const t = (s - 0.6) / 0.4;
+      pitch = 1.0 + t * 0.5;          // 1.0 → 1.5
+      reverb = t * 0.3;                // 0 → 0.3
+      hpFreq = 300.0 + t * 5000.0;     // opens up
+      sat = t;                         // 0 → 1
     }
 
-    // Pack parameters into a message for the processor
-    // Parameter IDs are defined in the C++ engine and mirrored here.
     const params = [
-      [0, stretch],      // TIME_STRETCH
-      [1, reverbMix],    // REVERB_MIX
-      [2, highPassFreq], // HIGH_PASS_FREQ
-      [3, saturation],   // SATURATION
+      [0, pitch],   // TIME_STRETCH (pitch multiplier)
+      [1, reverb],  // REVERB_MIX
+      [2, hpFreq],  // HIGH_PASS_FREQ
+      [3, sat]      // SATURATION
     ];
-
-    this.node.port.postMessage({
-      type: 'setParams',
-      values: params
-    });
+    this.node.port.postMessage({ type: 'setParams', values: params });
   }
 }
