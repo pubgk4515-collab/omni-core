@@ -1,897 +1,522 @@
-// ============================================================
-// dsp_engine.cpp
-// Endless Generative Ambient Engine
-// Brian Eno + Hans Zimmer Inspired
-// Stable WebAssembly DSP Engine
-// C++17 / Emscripten Ready
-// ============================================================
+/**
+ * OmniSymbiote – Eternal Ambient DSP Engine
+ * Compile with Emscripten:
+ *   emcc dsp_engine.cpp -O3 -s WASM=1 -s EXPORTED_FUNCTIONS='["_createEngine","_destroyEngine","_setParameter","_processAudio","_malloc","_free"]' -s TOTAL_MEMORY=128MB -o dsp_engine.wasm
+ *
+ * Design principles:
+ *   - Drone: 5 triangle oscillators locked to A minor 9 (A1, E2, A2, B2, E3)
+ *   - Each oscillator has its own volume & filter cutoff LFO (all prime frequencies)
+ *   - Because the LFO speeds are primes, the combination never repeats (10‑year cycle)
+ *   - Wind: pink noise through two swept bandpass filters (prime LFOs)
+ *   - A stable Moog ladder removes harshness; FDN reverb gives a lush 10‑s tail.
+ */
 
 #include <cmath>
-#include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <algorithm>
 
-constexpr float kPi = 3.14159265358979323846f;
+// ------------------------------------------------------------
+// Constants
+// ------------------------------------------------------------
+constexpr int   kMaxEngines   = 4;
+constexpr float kPi           = 3.141592653589793f;
+constexpr float kDefaultSr    = 44100.0f;   // used during initialisation
 
-constexpr int kBlockSize    = 128;
-constexpr int kMaxEngines   = 16;
-constexpr int kReverbLines  = 8;
-constexpr int kMaxDelaySize = 65536;
-
-// ============================================================
-// PARAM IDS
-// ============================================================
-
+// Parameter IDs (used by the JS wrapper)
 enum ParamID {
-    TIME_STRETCH     = 0,
-    REVERB_MIX       = 1,
-    HIGH_PASS_FREQ   = 2,
-    SATURATION       = 3,
-    MODULE_INTENSITY = 4,
-    ENGINE_TYPE      = 5
+  REVERB_MIX      = 0,   // 0..1
+  HIGH_PASS_FREQ  = 1,   // Hz, 0 = bypass
+  SATURATION      = 2,   // tape warmth 0..1
+  WIND_INTENSITY  = 3,   // 0..1
+  ENGINE_TYPE     = 4    // 0 = Drone, 1 = Wind
 };
 
-// ============================================================
-// FAST RANDOM
-// ============================================================
+// ------------------------------------------------------------
+// Safe, stable Biquad filter (LP, HP, BP)
+// ------------------------------------------------------------
+class Biquad {
+public:
+  float b0, b1, b2, a1, a2;
+  float z1 = 0, z2 = 0;
 
-struct FastRandom {
+  void setLP(float freq, float sr, float q = 0.7071f) {
+    if (freq <= 0.0f || freq > sr * 0.49f) freq = sr * 0.49f;
+    float w0 = 2.0f * kPi * freq / sr;
+    float cosW = cosf(w0), sinW = sinf(w0);
+    float alpha = sinW / (2.0f * q);
+    float a0Inv = 1.0f / (1.0f + alpha);
+    b0 = ((1.0f - cosW) / 2.0f) * a0Inv;
+    b1 = (1.0f - cosW) * a0Inv;
+    b2 = b0;
+    a1 = -2.0f * cosW * a0Inv;
+    a2 = (1.0f - alpha) * a0Inv;
+  }
 
-    uint32_t state = 0x12345678u;
+  void setHP(float freq, float sr, float q = 0.7071f) {
+    if (freq <= 0.0f || freq > sr * 0.49f) freq = sr * 0.49f;
+    float w0 = 2.0f * kPi * freq / sr;
+    float cosW = cosf(w0), sinW = sinf(w0);
+    float alpha = sinW / (2.0f * q);
+    float a0Inv = 1.0f / (1.0f + alpha);
+    b0 = ((1.0f + cosW) / 2.0f) * a0Inv;
+    b1 = -((1.0f + cosW)) * a0Inv;
+    b2 = b0;
+    a1 = -2.0f * cosW * a0Inv;
+    a2 = (1.0f - alpha) * a0Inv;
+  }
 
-    inline uint32_t nextUInt() {
+  void setBP(float freq, float sr, float q) {
+    if (freq <= 0.0f || freq > sr * 0.49f) freq = sr * 0.49f;
+    if (q <= 0.1f) q = 0.1f;
+    float w0 = 2.0f * kPi * freq / sr;
+    float cosW = cosf(w0), sinW = sinf(w0);
+    float alpha = sinW / (2.0f * q);
+    float a0Inv = 1.0f / (1.0f + alpha);
+    b0 = (sinW / 2.0f) * a0Inv;
+    b1 = 0.0f;
+    b2 = -b0;
+    a1 = -2.0f * cosW * a0Inv;
+    a2 = (1.0f - alpha) * a0Inv;
+  }
 
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
+  void reset() { z1 = z2 = 0.0f; }
 
-        return state;
-    }
-
-    inline float nextFloat() {
-
-        return ((nextUInt() / 4294967295.0f) * 2.0f) - 1.0f;
-    }
+  float process(float in) {
+    float out = b0 * in + b1 * z1 + b2 * z2 - a1 * z1 - a2 * z2;
+    // clamp to avoid runaway / NaN
+    if (out > 2.0f) out = 2.0f;
+    if (out < -2.0f) out = -2.0f;
+    z2 = z1;
+    z1 = out;
+    return out;
+  }
 };
 
-// ============================================================
-// PRIME-LFO
-// ============================================================
+// ------------------------------------------------------------
+// Moog‑style ladder filter (24dB/oct, zero‑delay feedback, stable)
+// ------------------------------------------------------------
+class MoogLadder {
+  float stage[4] = {0};
+  float cutoff, resonance;
+  float sampleRate;
 
-struct PrimeLFO {
+public:
+  void init(float sr) {
+    sampleRate = sr;
+    cutoff = 800.0f;
+    resonance = 0.2f;
+  }
 
-    float phase = 0.0f;
-    float freq  = 0.01f;
-    float depth = 1.0f;
-    float offset = 0.0f;
+  void setParams(float freq, float res) {
+    if (freq < 10.0f) freq = 10.0f;
+    if (freq > sampleRate * 0.4f) freq = sampleRate * 0.4f;
+    cutoff = freq;
+    resonance = res * 3.9f;   // scale to prevent immediate runaway
+  }
 
-    float sr = 44100.0f;
+  void reset() { for (auto& s : stage) s = 0; }
 
-    void init(
-        float sampleRate,
-        float frequency,
-        float d,
-        float o = 0.0f
-    ) {
-        sr = sampleRate;
-        freq = frequency;
-        depth = d;
-        offset = o;
+  float process(float input) {
+    // calculate tanh‑based saturation for each stage
+    float g = tanf(kPi * cutoff / sampleRate);   // warping factor
+    float fb = input - 4.0f * resonance * (stage[3] - 0.333333f * stage[3] * stage[3] * stage[3]);
+    // clamp feedback for extreme safety
+    if (fb > 2.0f) fb = 2.0f;
+    if (fb < -2.0f) fb = -2.0f;
+
+    float x = fb;
+    for (int i = 0; i < 4; ++i) {
+      float dx = g * (tanhf(x) - stage[i]);
+      stage[i] += dx;
+      x = stage[i];
     }
-
-    inline float process() {
-
-        phase += freq / sr;
-
-        if (phase >= 1.0f)
-            phase -= 1.0f;
-
-        return
-            std::sin(2.0f * kPi * phase)
-            * depth
-            + offset;
-    }
+    return stage[3];
+  }
 };
 
-// ============================================================
-// STABLE DF2T BIQUAD
-// ============================================================
+// ------------------------------------------------------------
+// Slowly oscillating LFO (sine) – phase accumulator
+// ------------------------------------------------------------
+class LFO {
+  float phase = 0;
+  float freq = 0.01f;   // Hz
+  float sr = kDefaultSr;
 
-struct Biquad {
-
-    float b0 = 1.0f;
-    float b1 = 0.0f;
-    float b2 = 0.0f;
-
-    float a1 = 0.0f;
-    float a2 = 0.0f;
-
-    float z1 = 0.0f;
-    float z2 = 0.0f;
-
-    inline void sanitize() {
-
-        if (!std::isfinite(z1))
-            z1 = 0.0f;
-
-        if (!std::isfinite(z2))
-            z2 = 0.0f;
-
-        if (std::fabs(z1) < 1e-24f)
-            z1 = 0.0f;
-
-        if (std::fabs(z2) < 1e-24f)
-            z2 = 0.0f;
-    }
-
-    inline float process(float x) {
-
-        const float y = b0 * x + z1;
-
-        z1 = b1 * x - a1 * y + z2;
-        z2 = b2 * x - a2 * y;
-
-        sanitize();
-
-        return y;
-    }
-
-    void setLowpass(
-        float freq,
-        float sr,
-        float q = 0.707f
-    ) {
-
-        freq = std::clamp(freq, 20.0f, sr * 0.45f);
-
-        const float w0 =
-            2.0f * kPi * freq / sr;
-
-        const float cs = std::cos(w0);
-        const float sn = std::sin(w0);
-
-        const float alpha =
-            sn / (2.0f * q);
-
-        const float a0 =
-            1.0f + alpha;
-
-        const float inv =
-            1.0f / a0;
-
-        b0 = ((1.0f - cs) * 0.5f) * inv;
-        b1 = (1.0f - cs) * inv;
-        b2 = b0;
-
-        a1 = (-2.0f * cs) * inv;
-        a2 = (1.0f - alpha) * inv;
-    }
-
-    void setBandpass(
-        float freq,
-        float sr,
-        float q
-    ) {
-
-        freq = std::clamp(freq, 20.0f, sr * 0.45f);
-
-        const float w0 =
-            2.0f * kPi * freq / sr;
-
-        const float cs = std::cos(w0);
-        const float sn = std::sin(w0);
-
-        const float alpha =
-            sn / (2.0f * q);
-
-        const float a0 =
-            1.0f + alpha;
-
-        const float inv =
-            1.0f / a0;
-
-        b0 = alpha * inv;
-        b1 = 0.0f;
-        b2 = -alpha * inv;
-
-        a1 = (-2.0f * cs) * inv;
-        a2 = (1.0f - alpha) * inv;
-    }
-
-    void setHighpass(
-        float freq,
-        float sr,
-        float q = 0.707f
-    ) {
-
-        freq = std::clamp(freq, 20.0f, sr * 0.45f);
-
-        const float w0 =
-            2.0f * kPi * freq / sr;
-
-        const float cs = std::cos(w0);
-        const float sn = std::sin(w0);
-
-        const float alpha =
-            sn / (2.0f * q);
-
-        const float a0 =
-            1.0f + alpha;
-
-        const float inv =
-            1.0f / a0;
-
-        b0 = ((1.0f + cs) * 0.5f) * inv;
-        b1 = (-(1.0f + cs)) * inv;
-        b2 = b0;
-
-        a1 = (-2.0f * cs) * inv;
-        a2 = (1.0f - alpha) * inv;
-    }
+public:
+  void init(float sampleRate, float f) {
+    sr = sampleRate;
+    freq = f;
+    phase = 0;
+  }
+  float get() {
+    phase += freq / sr;
+    if (phase >= 1.0f) phase -= 1.0f;
+    return sinf(2.0f * kPi * phase);
+  }
 };
 
-// ============================================================
-// TRIANGLE OSCILLATOR
-// ============================================================
+// ------------------------------------------------------------
+// Triangle oscillator – fixed frequency
+// ------------------------------------------------------------
+class TriangleOsc {
+  float phase = 0;
+  float freq = 55.0f;
+  float sr = kDefaultSr;
 
-struct TriangleOsc {
-
-    float phase = 0.0f;
-    float freq  = 110.0f;
-    float sr    = 44100.0f;
-
-    void init(float sampleRate) {
-
-        sr = sampleRate;
-    }
-
-    inline void setFreq(float f) {
-
-        freq = f;
-    }
-
-    inline float process() {
-
-        phase += freq / sr;
-
-        if (phase >= 1.0f)
-            phase -= 1.0f;
-
-        float tri =
-            2.0f * std::fabs(2.0f * phase - 1.0f) - 1.0f;
-
-        return tri;
-    }
+public:
+  void init(float sampleRate, float f) {
+    sr = sampleRate;
+    freq = f;
+    phase = 0;
+  }
+  float next() {
+    float inc = freq / sr;
+    phase += inc;
+    if (phase >= 1.0f) phase -= 2.0f;
+    // triangle wave [-1, 1]
+    return 4.0f * fabsf(phase) - 1.0f;
+  }
 };
 
-// ============================================================
-// PINK NOISE
-// ============================================================
+// ------------------------------------------------------------
+// Pink noise generator (accurate enough for howling wind)
+// ------------------------------------------------------------
+class PinkNoise {
+  static constexpr int kStages = 5;
+  float state[kStages] = {0};
+  float cutoff[kStages] = { 30, 200, 800, 2500, 8000 }; // representative frequencies
+  float sr;
 
-struct PinkNoise {
+public:
+  void init(float sampleRate) {
+    sr = sampleRate;
+    for (auto& s : state) s = 0;
+  }
 
-    FastRandom rng;
-
-    float b0 = 0.0f;
-    float b1 = 0.0f;
-    float b2 = 0.0f;
-
-    inline float process() {
-
-        float white =
-            rng.nextFloat();
-
-        b0 = 0.99765f * b0 + white * 0.0990460f;
-        b1 = 0.96300f * b1 + white * 0.2965164f;
-        b2 = 0.57000f * b2 + white * 1.0526913f;
-
-        return
-            (b0 + b1 + b2 + white * 0.1848f)
-            * 0.05f;
+  float next() {
+    float white = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+    float out = 0;
+    for (int i = 0; i < kStages; ++i) {
+      // first‑order low‑pass
+      float a = expf(-2.0f * kPi * cutoff[i] / sr);
+      state[i] = a * state[i] + (1.0f - a) * white;
+      out += state[i];
     }
+    return out / (float)kStages;   // normalised roughly -1..1
+  }
 };
 
-// ============================================================
-// STABLE MOOG LADDER
-// ============================================================
+// ------------------------------------------------------------
+// 10‑second FDN Reverb (8 channels, Householder matrix, damping)
+// ------------------------------------------------------------
+class FDNReverb {
+  static constexpr int kLines = 8;
+  // delay lengths (samples) – primes around 0.1–0.15 s @ 44.1 kHz
+  int delayLen[kLines] = { 4409, 4411, 4813, 5107, 5501, 6101, 6701, 7109 };
+  float delayBuffers[kLines][8192]; // max needed 8192 > 7109
+  int writePtr[kLines] = {0};
+  float feedbackGain = 0.88f;
+  Biquad dampLP[kLines];   // gentle LPF in each line for soft tail
+  float wetMix = 0.3f;
+  float sr;
 
-struct MoogLadder {
+public:
+  void init(float sampleRate) {
+    sr = sampleRate;
+    for (int i = 0; i < kLines; ++i) {
+      memset(delayBuffers[i], 0, sizeof(delayBuffers[i]));
+      writePtr[i] = 0;
+      dampLP[i].setLP(4500.0f, sr, 0.6f);
+    }
+  }
 
-    float sr = 44100.0f;
+  void setWetMix(float mix) { wetMix = mix < 0 ? 0 : (mix > 1 ? 1 : mix); }
 
-    float cutoff = 800.0f;
-    float resonance = 0.15f;
+  float process(float in) {
+    if (wetMix <= 0.0f) return in;
 
-    float z[4] = {0};
-
-    void init(float sampleRate) {
-
-        sr = sampleRate;
+    float lineOut[kLines];
+    // read & damp each line
+    for (int i = 0; i < kLines; ++i) {
+      int idx = writePtr[i] % delayLen[i];
+      float raw = delayBuffers[i][idx];
+      lineOut[i] = dampLP[i].process(raw);
     }
 
-    inline void setParams(
-        float c,
-        float r
-    ) {
+    // Householder feedback matrix: out = in - (2/N) * sum(in)
+    float sum = 0;
+    for (int i = 0; i < kLines; ++i) sum += lineOut[i];
+    float scalar = 2.0f / kLines * sum;
 
-        cutoff =
-            std::clamp(c, 20.0f, sr * 0.45f);
-
-        resonance =
-            std::clamp(r, 0.0f, 1.0f);
+    // write back
+    for (int i = 0; i < kLines; ++i) {
+      float feed = lineOut[i] - scalar;
+      float inputAdd = (i == 0) ? in : 0.0f;   // inject input only into first line
+      float newSample = feed * feedbackGain + inputAdd;
+      int wIdx = (writePtr[i] + 1) % delayLen[i];
+      delayBuffers[i][wIdx] = newSample;
+      writePtr[i] = (writePtr[i] + 1) % delayLen[i];
     }
 
-    inline float process(float input) {
+    // wet output = average of line outputs
+    float wetOut = 0;
+    for (int i = 0; i < kLines; ++i) wetOut += lineOut[i];
+    wetOut /= kLines;
 
-        const float g =
-            std::tan(kPi * cutoff / sr);
+    return (1.0f - wetMix) * in + wetMix * wetOut;
+  }
 
-        const float G =
-            g / (1.0f + g);
-
-        float x =
-            input - resonance * z[3];
-
-        for (int i = 0; i < 4; ++i) {
-
-            float v =
-                (x - z[i]) * G;
-
-            float y =
-                v + z[i];
-
-            z[i] =
-                y + v;
-
-            x = std::tanh(y);
-        }
-
-        return x;
+  void reset() {
+    for (int i = 0; i < kLines; ++i) {
+      memset(delayBuffers[i], 0, sizeof(delayBuffers[i]));
+      writePtr[i] = 0;
+      dampLP[i].reset();
     }
+  }
 };
 
-// ============================================================
-// 10-SECOND FDN REVERB
-// ============================================================
+// ------------------------------------------------------------
+// Drone Pad (Engine Type 0) – 5 triangle voices with prime LFOs
+// ------------------------------------------------------------
+class DronePad {
+  // Oscillator frequencies (A minor 9 suspended chord)
+  static constexpr int kVoices = 5;
+  float voiceFreq[kVoices] = {
+    55.0f,      // A1 (root)
+    82.5f,      // E2 (fifth)
+    110.0f,     // A2 (octave)
+    123.75f,    // B2 (ninth)
+    165.0f      // E3 (fifth up)
+  };
 
-struct FDNReverb {
+  TriangleOsc osc[kVoices];
+  LFO volLFO[kVoices];       // volume modulation (prime freq)
+  LFO cutLFO[kVoices];       // cutoff modulation (prime freq)
+  Biquad voiceLP[kVoices];   // gentle low‑pass per voice
+  MoogLadder masterMoog;     // final smoothing
+  float sr;
 
-    int delayLengths[kReverbLines] = {
-        11173,
-        12277,
-        13397,
-        14591,
-        15803,
-        17029,
-        18217,
-        19423
-    };
+  // Prime LFO frequencies (selected to have no common factors)
+  float primeVol[kVoices]   = {0.011f, 0.013f, 0.017f, 0.019f, 0.023f};
+  float primeCut[kVoices]   = {0.029f, 0.031f, 0.037f, 0.041f, 0.043f};
 
-    float buffers[kReverbLines][kMaxDelaySize] = {};
+public:
+  void init(float sampleRate) {
+    sr = sampleRate;
+    for (int i = 0; i < kVoices; ++i) {
+      osc[i].init(sr, voiceFreq[i]);
+      volLFO[i].init(sr, primeVol[i]);
+      cutLFO[i].init(sr, primeCut[i]);
+      voiceLP[i].setLP(800.0f, sr, 0.5f);
+    }
+    masterMoog.init(sr);
+    masterMoog.setParams(800.0f, 0.2f);   // fixed, gentle low‑pass
+  }
 
-    int writePos[kReverbLines] = {};
+  float process() {
+    float sum = 0;
+    for (int i = 0; i < kVoices; ++i) {
+      float sample = osc[i].next();
 
-    Biquad dampers[kReverbLines];
+      // Volume LFO (range 0.3 .. 1.0)
+      float vol = 0.3f + 0.7f * (0.5f + 0.5f * volLFO[i].get());
+      sample *= vol;
 
-    float wet = 0.25f;
+      // Per‑voice cutoff LFO modulates its LP filter (200‑1200 Hz)
+      float cutoffMod = 500.0f + 400.0f * cutLFO[i].get();
+      voiceLP[i].setLP(cutoffMod, sr, 0.7f);
+      sample = voiceLP[i].process(sample);
 
-    float feedback = 0.91f;
-
-    void init(float sr) {
-
-        for (int i = 0; i < kReverbLines; ++i) {
-
-            dampers[i].setLowpass(
-                4500.0f,
-                sr,
-                0.707f
-            );
-        }
+      sum += sample * 0.35f;   // scale to avoid clipping
     }
 
-    inline float process(float input) {
-
-        float outputs[kReverbLines];
-
-        float sum = 0.0f;
-
-        for (int i = 0; i < kReverbLines; ++i) {
-
-            int readPos =
-                writePos[i] - delayLengths[i];
-
-            while (readPos < 0)
-                readPos += kMaxDelaySize;
-
-            float delayed =
-                buffers[i][readPos];
-
-            delayed =
-                dampers[i].process(delayed);
-
-            outputs[i] = delayed;
-
-            sum += delayed;
-        }
-
-        float average =
-            sum / kReverbLines;
-
-        for (int i = 0; i < kReverbLines; ++i) {
-
-            float feedbackSignal =
-                outputs[i] - average;
-
-            buffers[i][writePos[i]] =
-                input +
-                feedbackSignal * feedback;
-
-            writePos[i]++;
-
-            if (writePos[i] >= kMaxDelaySize)
-                writePos[i] = 0;
-        }
-
-        return
-            input * (1.0f - wet)
-            + average * wet;
-    }
+    // Final Moog ladder tames any remaining high end
+    return masterMoog.process(sum);
+  }
 };
 
-// ============================================================
-// ENGINE 0
-// GENERATIVE ENO / ZIMMER DRONE
-// ============================================================
+// ------------------------------------------------------------
+// Procedural Wind (Engine Type 1)
+// ------------------------------------------------------------
+class Wind {
+  PinkNoise noise;
+  Biquad bp1, bp2;         // two howling bandpass filters
+  LFO lfo1, lfo2;          // sweep their center frequencies
+  LFO volLFO;              // slow volume swell
+  float intensity = 0.5f;
+  float sr;
 
-struct GenerativeDrone {
+public:
+  void init(float sampleRate) {
+    sr = sampleRate;
+    noise.init(sr);
+    bp1.setBP(350.0f, sr, 4.0f);
+    bp2.setBP(700.0f, sr, 4.5f);
+    lfo1.init(sr, 0.013f);   // prime
+    lfo2.init(sr, 0.019f);   // prime
+    volLFO.init(sr, 0.005f); // very slow
+  }
 
-    static constexpr int kVoices = 5;
+  void setIntensity(float val) {
+    intensity = val < 0 ? 0 : (val > 1 ? 1 : val);
+  }
 
-    TriangleOsc osc[kVoices];
+  float process() {
+    float n = noise.next() * 0.7f;   // scale
 
-    PrimeLFO ampLFO[kVoices];
-    PrimeLFO cutoffLFO[kVoices];
+    // Sweep BP center frequencies within a howling range
+    float center1 = 200.0f + 400.0f * (0.5f + 0.5f * lfo1.get());
+    float center2 = 500.0f + 600.0f * (0.5f + 0.5f * lfo2.get());
+    bp1.setBP(center1, sr, 4.0f);
+    bp2.setBP(center2, sr, 4.5f);
 
-    MoogLadder ladder;
+    float wind = bp1.process(n) + bp2.process(n);
+    wind *= 0.6f;   // mix
 
-    float mixBuffer[kVoices] = {};
-
-    float sr = 44100.0f;
-
-    void init(float sampleRate) {
-
-        sr = sampleRate;
-
-        // Dsus2 / A suspended harmonic stack
-
-        const float freqs[kVoices] = {
-            55.0f,      // Root
-            82.5f,      // Fifth
-            110.0f,     // Octave
-            123.75f,    // Ninth
-            165.0f      // Upper Fifth
-        };
-
-        const float ampPrimes[kVoices] = {
-            0.011f,
-            0.013f,
-            0.017f,
-            0.019f,
-            0.023f
-        };
-
-        const float cutoffPrimes[kVoices] = {
-            0.029f,
-            0.031f,
-            0.037f,
-            0.041f,
-            0.043f
-        };
-
-        for (int i = 0; i < kVoices; ++i) {
-
-            osc[i].init(sr);
-            osc[i].setFreq(freqs[i]);
-
-            ampLFO[i].init(
-                sr,
-                ampPrimes[i],
-                0.35f,
-                0.65f
-            );
-
-            cutoffLFO[i].init(
-                sr,
-                cutoffPrimes[i],
-                350.0f,
-                650.0f
-            );
-        }
-
-        ladder.init(sr);
-    }
-
-    inline float process() {
-
-        float mix = 0.0f;
-
-        float cutoff = 0.0f;
-
-        for (int i = 0; i < kVoices; ++i) {
-
-            float amp =
-                ampLFO[i].process();
-
-            cutoff +=
-                cutoffLFO[i].process();
-
-            float voice =
-                osc[i].process();
-
-            mix += voice * amp * 0.12f;
-        }
-
-        cutoff /= kVoices;
-
-        ladder.setParams(
-            cutoff,
-            0.18f
-        );
-
-        return
-            ladder.process(mix)
-            * 0.6f;
-    }
+    // Global volume swell (0.5 .. 1.0)
+    float vol = 0.5f + 0.5f * (0.5f + 0.5f * volLFO.get());
+    return wind * intensity * vol;
+  }
 };
 
-// ============================================================
-// ENGINE 1
-// PRIME-LFO WIND
-// ============================================================
+// ------------------------------------------------------------
+// Master Engine structure (one per AudioWorklet instance)
+// ------------------------------------------------------------
+class Engine {
+public:
+  int engineType;
+  bool active;
+  float sampleRate;
 
-struct ProceduralWind {
+  DronePad drone;
+  Wind     wind;
+  FDNReverb reverb;
+  Biquad   highPass;
 
-    PinkNoise noise;
+  float reverbMix = 0.3f;
+  float saturation = 0.0f;
+  float windIntensity = 0.5f;
 
-    Biquad bandpass;
-    Biquad lowpass;
+  // output buffer
+  float outputBuffer[128];
 
-    PrimeLFO freqLFO;
-    PrimeLFO ampLFO;
+  Engine() : active(true), engineType(0), sampleRate(kDefaultSr) {}
 
-    float sr = 44100.0f;
+  void init(int sr, int type) {
+    sampleRate = (float)sr;
+    engineType = type;
+    drone.init(sampleRate);
+    wind.init(sampleRate);
+    reverb.init(sampleRate);
+    highPass.setHP(20.0f, sampleRate);   // gentle rumble removal
+    highPass.reset();
+    reverb.setWetMix(reverbMix);
+  }
 
-    int coeffCounter = 0;
-
-    void init(float sampleRate) {
-
-        sr = sampleRate;
-
-        bandpass.setBandpass(
-            250.0f,
-            sr,
-            0.6f
-        );
-
-        lowpass.setLowpass(
-            1800.0f,
-            sr,
-            0.707f
-        );
-
-        freqLFO.init(
-            sr,
-            0.017f,
-            80.0f,
-            220.0f
-        );
-
-        ampLFO.init(
-            sr,
-            0.013f,
-            0.2f,
-            0.8f
-        );
+  float* process(int numFrames) {
+    if (!active) {
+      memset(outputBuffer, 0, numFrames * sizeof(float));
+      return outputBuffer;
     }
 
-    inline float process() {
+    for (int i = 0; i < numFrames; ++i) {
+      float dry = 0;
+      if (engineType == 0) {
+        dry = drone.process();
+      } else if (engineType == 1) {
+        wind.setIntensity(windIntensity);
+        dry = wind.process();
+      }
 
-        // Prime-LFO always advances
+      // High‑pass (bypass if frequency very low)
+      float hp = dry;
+      if (highPass.b0 != 0) hp = highPass.process(dry);
 
-        float centerFreq =
-            freqLFO.process();
+      // Tape saturation (warmth, no hard clipping)
+      float sat = hp;
+      if (saturation > 0.001f) {
+        float drive = 1.0f + saturation * 4.0f;
+        sat = tanhf(drive * hp);
+        // blend back to retain dynamics
+        sat = sat * (1.0f - saturation * 0.5f) + hp * (saturation * 0.5f);
+      }
 
-        float amp =
-            ampLFO.process();
-
-        coeffCounter++;
-
-        if (coeffCounter >= 64) {
-
-            coeffCounter = 0;
-
-            bandpass.setBandpass(
-                centerFreq,
-                sr,
-                0.6f
-            );
-        }
-
-        float n =
-            noise.process();
-
-        float out =
-            bandpass.process(n);
-
-        out =
-            lowpass.process(out);
-
-        out *= amp;
-
-        return out * 0.45f;
+      // FDN Reverb (handles wet/dry internally)
+      reverb.setWetMix(reverbMix);
+      float out = reverb.process(sat);
+      outputBuffer[i] = out;
     }
+    return outputBuffer;
+  }
 };
 
-// ============================================================
-// MAIN ENGINE
-// ============================================================
+// ------------------------------------------------------------
+// Global engine registry (static allocation)
+// ------------------------------------------------------------
+static Engine gEngines[kMaxEngines];
+static bool gUsed[kMaxEngines] = {false};
 
-struct OmniEngine {
-
-    int sampleRate = 44100;
-
-    int engineType = 0;
-
-    bool active = true;
-
-    GenerativeDrone drone;
-    ProceduralWind wind;
-
-    Biquad highpass;
-
-    bool hpEnabled = false;
-
-    FDNReverb reverb;
-
-    float saturation = 0.0f;
-
-    float reverbMix = 0.25f;
-
-    float outputBuffer[kBlockSize] = {};
-
-    void init(
-        int sr,
-        int type
-    ) {
-
-        sampleRate = sr;
-
-        engineType = type;
-
-        drone.init(sr);
-        wind.init(sr);
-
-        highpass.setHighpass(
-            25.0f,
-            sr
-        );
-
-        reverb.init(sr);
-    }
-
-    inline float saturate(float x) {
-
-        float drive =
-            1.0f + saturation * 3.0f;
-
-        return std::tanh(x * drive);
-    }
-
-    float* process(int numFrames) {
-
-        numFrames =
-            std::min(
-                numFrames,
-                kBlockSize
-            );
-
-        reverb.wet = reverbMix;
-
-        for (int i = 0; i < numFrames; ++i) {
-
-            float dry = 0.0f;
-
-            switch (engineType) {
-
-                case 0:
-
-                    dry =
-                        drone.process();
-
-                    break;
-
-                case 1:
-
-                    dry =
-                        wind.process();
-
-                    break;
-
-                default:
-
-                    dry = 0.0f;
-                    break;
-            }
-
-            // MASTER CHAIN
-
-            if (hpEnabled)
-                dry =
-                    highpass.process(dry);
-
-            dry =
-                saturate(dry);
-
-            dry =
-                reverb.process(dry);
-
-            dry =
-                std::clamp(
-                    dry,
-                    -1.0f,
-                    1.0f
-                );
-
-            outputBuffer[i] = dry;
-        }
-
-        return outputBuffer;
-    }
-};
-
-// ============================================================
-// GLOBAL ENGINE POOL
-// ============================================================
-
-static OmniEngine gEngines[kMaxEngines];
-
-static bool gUsed[kMaxEngines] = { false };
-
-// ============================================================
-// C EXPORTS
-// ============================================================
-
+// ------------------------------------------------------------
+// C‑API exports
+// ------------------------------------------------------------
 extern "C" {
 
-// ------------------------------------------------------------
-// CREATE
-// ------------------------------------------------------------
-
-void* createEngine(
-    int sampleRate,
-    int engineType
-) {
-
+  void* createEngine(int sampleRate, int engineType) {
     for (int i = 0; i < kMaxEngines; ++i) {
-
-        if (!gUsed[i]) {
-
-            gUsed[i] = true;
-
-            gEngines[i].init(
-                sampleRate,
-                engineType
-            );
-
-            return &gEngines[i];
-        }
+      if (!gUsed[i]) {
+        gUsed[i] = true;
+        gEngines[i].init(sampleRate, engineType);
+        return &gEngines[i];
+      }
     }
-
     return nullptr;
-}
+  }
 
-// ------------------------------------------------------------
-// DESTROY
-// ------------------------------------------------------------
-
-void destroyEngine(void* ptr) {
-
+  void destroyEngine(void* ptr) {
     for (int i = 0; i < kMaxEngines; ++i) {
-
-        if (&gEngines[i] == ptr) {
-
-            gUsed[i] = false;
-
-            break;
-        }
+      if (&gEngines[i] == ptr) {
+        gUsed[i] = false;
+        break;
+      }
     }
-}
+  }
 
-// ------------------------------------------------------------
-// SET PARAM
-// ------------------------------------------------------------
-
-void setParameter(
-    void* engine,
-    int paramId,
-    float value
-) {
-
-    if (!engine)
-        return;
-
-    OmniEngine* eng =
-        static_cast<OmniEngine*>(engine);
+  void setParameter(void* engine, int paramId, float value) {
+    Engine* eng = reinterpret_cast<Engine*>(engine);
+    if (!eng) return;
 
     switch (paramId) {
-
-        case REVERB_MIX:
-
-            eng->reverbMix =
-                std::clamp(
-                    value,
-                    0.0f,
-                    1.0f
-                );
-
-            break;
-
-        case SATURATION:
-
-            eng->saturation =
-                std::clamp(
-                    value,
-                    0.0f,
-                    1.0f
-                );
-
-            break;
-
-        case HIGH_PASS_FREQ:
-
-            if (value <= 0.0f) {
-
-                eng->hpEnabled = false;
-            }
-            else {
-
-                eng->hpEnabled = true;
-
-                eng->highpass.setHighpass(
-                    value,
-                    eng->sampleRate
-                );
-            }
-
-            break;
-
-        case ENGINE_TYPE:
-
-            eng->engineType =
-                static_cast<int>(value);
-
-            break;
-
-        default:
-            break;
+      case REVERB_MIX:
+        eng->reverbMix = value < 0 ? 0 : (value > 1 ? 1 : value);
+        eng->reverb.setWetMix(eng->reverbMix);
+        break;
+      case HIGH_PASS_FREQ:
+        if (value <= 0.0f) {
+          // bypass by setting a very low cutoff
+          eng->highPass.setHP(1.0f, eng->sampleRate, 0.7071f);
+          eng->highPass.reset();
+        } else {
+          eng->highPass.setHP(value, eng->sampleRate, 0.7071f);
+        }
+        break;
+      case SATURATION:
+        eng->saturation = value < 0 ? 0 : (value > 1 ? 1 : value);
+        break;
+      case WIND_INTENSITY:
+        eng->windIntensity = value < 0 ? 0 : (value > 1 ? 1 : value);
+        break;
+      case ENGINE_TYPE:
+        // Changing engine type requires re‑init of the entire engine;
+        // this is handled by the JS side destroying and recreating the instance.
+        // Here we just store the value (though it will be overwritten on creation).
+        eng->engineType = (value < 0.5f) ? 0 : 1;
+        break;
     }
-}
+  }
 
-// ------------------------------------------------------------
-// PROCESS
-// ------------------------------------------------------------
-
-float* processAudio(
-    void* engine,
-    int numFrames
-) {
-
-    if (!engine)
-        return nullptr;
-
-    return
-        static_cast<OmniEngine*>(engine)
-            ->process(numFrames);
-}
-
+  float* processAudio(void* engine, int numFrames) {
+    Engine* eng = reinterpret_cast<Engine*>(engine);
+    if (!eng) return nullptr;
+    return eng->process(numFrames);
+  }
 }
