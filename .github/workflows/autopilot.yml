@@ -1,0 +1,32 @@
+name: OmniEngine Autopilot (Wasm Compiler)
+
+# Ye sirf tab chalega jab tum C++ file me koi change karoge
+on:
+  push:
+    paths:
+      - 'dsp_engine.cpp'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Bot ko wapas code save karne ki permission
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Emscripten (C++ Compiler)
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: 🚀 Compile C++ to WebAssembly
+        run: |
+          emcc dsp_engine.cpp -O3 -std=c++17 -s WASM=1 -s EXPORTED_FUNCTIONS='["_createEngine","_destroyEngine","_setParameter","_processAudio","_malloc","_free"]' -s TOTAL_MEMORY=64MB --no-entry -o dsp_engine.wasm
+
+      - name: 💾 Save Wasm & Trigger Vercel
+        run: |
+          git config --global user.name "Omni Autopilot Agent"
+          git config --global user.email "autopilot@omni.engine"
+          git add dsp_engine.wasm
+          git commit -m "🤖 Autopilot: Compiled new Wasm engine" || echo "No changes to commit"
+          git push
