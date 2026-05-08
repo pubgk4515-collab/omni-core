@@ -7,7 +7,6 @@
  */
 import { ExpertModuleTemplate } from './expert_template.js';
 import { ExpertWindModule } from './expert_wind.js';
-import { ExpertModuleTemplate } from './expert_template.js';
 
 // --- 1. Worklet processor source (created as a Blob) ---
 function createWorkletCode() {
