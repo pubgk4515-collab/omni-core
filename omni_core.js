@@ -6,6 +6,8 @@
  * each own a dedicated AudioWorkletNode that runs a copy of the Wasm DSP engine.
  */
 import { ExpertModuleTemplate } from './expert_template.js';
+import { ExpertWindModule } from './expert_wind.js';
+import { ExpertModuleTemplate } from './expert_template.js';
 
 // --- 1. Worklet processor source (created as a Blob) ---
 function createWorkletCode() {
@@ -124,8 +126,15 @@ class OmniCore {
     await this.audioCtx.audioWorklet.addModule(workletUrl);
 
     // Create the initial set of expert modules (examples)
-    const moduleDefs = ['AmbientPad', 'WindTones', 'EtherealChimes', 'OceanDrones'];
-    moduleDefs.forEach((name, idx) => this._addExpertModule(name, idx));
+    const moduleConfigs = [
+      { name: 'Deep Drone', class: ExpertModuleTemplate },
+      { name: 'Procedural Wind', class: ExpertWindModule }
+    ];
+    
+    moduleConfigs.forEach((cfg, idx) => {
+        this._addExpertModule(cfg.name, idx, cfg.class);
+    });
+
 
     // Wire UI interactions
     this.autoButton.addEventListener('click', () => this._autoDirector());
@@ -135,8 +144,8 @@ class OmniCore {
    * Creates a new expert module, its dedicated Wasm AudioWorkletNode,
    * and the corresponding UI tab.
    */
-  _addExpertModule(name, index) {
-    const expert = new ExpertModuleTemplate();
+  _addExpertModule(name, index, ModuleClass) {
+    const expert = new ModuleClass(); // Ye dynamic class initiate karega
     const id = `${name}_${index}`;
 
     // Each module gets its own Wasm instance (copy of the binary)
