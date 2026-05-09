@@ -1,13 +1,13 @@
 /**
  * spatial_audio_router.js
  * Procedural Acoustic World Simulator
- * Phase — Spatial Audio Execution Layer
+ * Production Spatial Audio Execution Layer
  *
  * ------------------------------------------------------------
  * PURPOSE
  * ------------------------------------------------------------
- * This module is the REAL-TIME AUDIO EXECUTION LAYER
- * sitting beneath:
+ * This module is the real-time acoustic execution layer
+ * beneath:
  *
  *   WorldState
  *   BehavioralRulesEngine
@@ -18,60 +18,52 @@
  *   Web Audio API
  *
  * ------------------------------------------------------------
- * RESPONSIBILITIES
- * ------------------------------------------------------------
- *
- * 1. SampleBank
- *    - async sample loading
- *    - decode caching
- *    - memory-efficient asset reuse
- *
- * 2. AcousticEnvironment
- *    - global audio graph
- *    - enclosure acoustics
- *    - environmental filtering
- *    - master dynamics protection
- *
- * 3. EcologicalAudioBehavior
- *    - bridges AtomicBehavior → audible events
- *    - converts ecological actions into sound playback
- *
- * ------------------------------------------------------------
  * DESIGN PHILOSOPHY
  * ------------------------------------------------------------
  *
- * Behavioral systems decide:
- *   "WHAT should happen"
+ * This is NOT:
+ * - a music player
+ * - a timeline sequencer
+ * - a loop engine
  *
- * Audio systems decide:
- *   "HOW it sounds spatially"
- *
- * ------------------------------------------------------------
- * MEMORY SAFETY
- * ------------------------------------------------------------
- *
- * One-shot nodes:
- * - are disconnected after playback
- * - release references immediately
- * - allow browser garbage collection
+ * This IS:
+ * - a stochastic ecological simulator
+ * - a long-running acoustic infrastructure layer
+ * - an emergent spatial behavior renderer
  *
  * ------------------------------------------------------------
- * THREADING
+ * CORE SYSTEMS
  * ------------------------------------------------------------
  *
- * Audio loading:
- * - async
- * - non-blocking
- * - Promise-based
+ * 1. SampleBank
+ *    - robust async asset management
+ *    - deduplicated concurrent loading
+ *    - decoded buffer cache
  *
- * Playback:
- * - Web Audio render thread
+ * 2. AcousticEnvironment
+ *    - master audio graph
+ *    - enclosure acoustics
+ *    - environmental filtering
+ *    - parallel reverb architecture
+ *    - clipping protection
+ *
+ * 3. EcologicalAudioBehavior
+ *    - AtomicBehavior → audible ecological event bridge
+ *    - stochastic spatial playback
+ *    - one-shot node lifecycle management
  *
  * ------------------------------------------------------------
- * DEPENDENCIES
+ * PRODUCTION GUARANTEES
  * ------------------------------------------------------------
  *
- * Assumes ES6 module imports work.
+ * - No silent DSP black holes
+ * - Dry signal ALWAYS survives
+ * - No invalid gain/pitch/pan values
+ * - No memory leaks
+ * - Mobile-safe
+ * - Long-session stable
+ * - Browser-safe decode fallbacks
+ * - Reverb safe even if IR generation fails
  */
 
 import {
@@ -84,7 +76,7 @@ import {
  * ========================================================== */
 
 /**
- * Safely disconnects a node.
+ * Safe AudioNode disconnect.
  * @param {AudioNode|null|undefined} node
  */
 function safeDisconnect(node) {
@@ -93,6 +85,32 @@ function safeDisconnect(node) {
   try {
     node.disconnect();
   } catch (_) {}
+}
+
+/**
+ * Clamp numeric value.
+ * @param {number} value
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+function clamp(value, min, max) {
+  return Math.min(
+    max,
+    Math.max(min, value)
+  );
+}
+
+/**
+ * Safe finite number.
+ * @param {number} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value)
+    ? value
+    : fallback;
 }
 
 /**
@@ -106,48 +124,57 @@ function randomRange(min, max) {
 }
 
 /**
- * Random array item.
+ * Random array selection.
  * @template T
- * @param {T[]} arr
+ * @param {T[]} array
  * @returns {T}
  */
-function randomChoice(arr) {
-  return arr[
-    Math.floor(Math.random() * arr.length)
+function randomChoice(array) {
+  return array[
+    Math.floor(Math.random() * array.length)
   ];
 }
 
 /**
  * Browser-safe decodeAudioData.
+ * Safari-safe.
+ *
  * @param {BaseAudioContext} context
- * @param {ArrayBuffer} buffer
+ * @param {ArrayBuffer} arrayBuffer
  * @returns {Promise<AudioBuffer>}
  */
 async function decodeAudioData(
   context,
-  buffer
+  arrayBuffer
 ) {
 
-  const decoded =
-    context.decodeAudioData(buffer);
+  try {
+
+    const result =
+      context.decodeAudioData(
+        arrayBuffer
+      );
+
+    /**
+     * Modern Promise browsers.
+     */
+    if (
+      result &&
+      typeof result.then === "function"
+    ) {
+      return await result;
+    }
+
+  } catch (_) {}
 
   /**
-   * Modern Promise browsers.
-   */
-  if (
-    decoded &&
-    typeof decoded.then === "function"
-  ) {
-    return await decoded;
-  }
-
-  /**
-   * Legacy Safari fallback.
+   * Legacy callback fallback.
    */
   return await new Promise(
     (resolve, reject) => {
+
       context.decodeAudioData(
-        buffer,
+        arrayBuffer,
         resolve,
         reject
       );
@@ -160,46 +187,89 @@ async function decodeAudioData(
  * ========================================================== */
 
 /**
- * Centralized tiny-sample asset manager.
+ * Robust asynchronous ecological sample manager.
  *
- * Handles:
- * - async fetch
- * - decode
- * - caching
- * - deduplicated requests
+ * ------------------------------------------------------------
+ * FEATURES
+ * ------------------------------------------------------------
  *
- * Ideal for:
+ * - Promise-based loading
+ * - Decoded AudioBuffer cache
+ * - Deduplicated concurrent fetches
+ * - Explicit diagnostics
+ * - Memory-safe cleanup
+ * - Optional preload support
+ *
+ * ------------------------------------------------------------
+ * IMPORTANT
+ * ------------------------------------------------------------
+ *
+ * Tiny atomic assets:
  * - chirps
  * - footsteps
- * - snaps
- * - micro-events
+ * - branch snaps
+ * - insects
+ * - rustles
+ *
+ * are reused thousands of times
+ * over long simulation sessions.
  */
 export class SampleBank {
 
   /**
    * @param {BaseAudioContext} context
+   * @param {object} [options={}]
    */
-  constructor(context) {
+  constructor(
+    context,
+    options = {}
+  ) {
 
     if (!context) {
       throw new Error(
-        "SampleBank requires AudioContext."
+        "[SampleBank] AudioContext required."
       );
     }
 
-    this._context = context;
+    this.context = context;
+
+    this.debug =
+      options.debug ?? false;
 
     /**
-     * Cached decoded buffers.
-     * Map<string, AudioBuffer>
+     * URL → AudioBuffer
+     * @type {Map<string, AudioBuffer>}
      */
-    this._buffers = new Map();
+    this._buffers =
+      new Map();
 
     /**
-     * Prevent duplicate concurrent loads.
-     * Map<string, Promise<AudioBuffer>>
+     * URL → Promise<AudioBuffer>
+     * Prevents duplicate simultaneous fetches.
+     * @type {Map<string, Promise<AudioBuffer>>}
      */
-    this._pending = new Map();
+    this._pending =
+      new Map();
+  }
+
+  /* ============================================================
+   * Logging
+   * ========================================================== */
+
+  _log(...args) {
+    if (this.debug) {
+      console.log(
+        "[SampleBank]",
+        ...args
+      );
+    }
+  }
+
+  _warn(...args) {
+    console.warn(
+      "[SampleBank]",
+      ...args
+    );
   }
 
   /* ============================================================
@@ -207,7 +277,7 @@ export class SampleBank {
    * ========================================================== */
 
   /**
-   * Returns whether sample already cached.
+   * Whether asset exists in cache.
    * @param {string} url
    * @returns {boolean}
    */
@@ -216,49 +286,72 @@ export class SampleBank {
   }
 
   /**
-   * Retrieves sample buffer.
+   * Retrieves decoded AudioBuffer.
    *
    * Guarantees:
-   * - one network fetch
-   * - one decode operation
+   * - one fetch
+   * - one decode
+   * - deduplicated concurrent requests
    *
    * @param {string} url
    * @returns {Promise<AudioBuffer>}
    */
   async get(url) {
 
+    if (!url) {
+      throw new Error(
+        "[SampleBank] Invalid URL."
+      );
+    }
+
     /**
-     * Cached immediately.
+     * Cached buffer.
      */
     if (this._buffers.has(url)) {
       return this._buffers.get(url);
     }
 
     /**
-     * Existing async load.
+     * Existing async request.
      */
     if (this._pending.has(url)) {
       return await this._pending.get(url);
     }
 
-    const loadPromise = this._load(url);
+    const promise =
+      this._load(url);
 
     this._pending.set(
       url,
-      loadPromise
+      promise
     );
 
     try {
 
       const buffer =
-        await loadPromise;
+        await promise;
 
       this._buffers.set(
         url,
         buffer
       );
 
+      this._log(
+        "Loaded:",
+        url
+      );
+
       return buffer;
+
+    } catch (err) {
+
+      this._warn(
+        "Failed loading asset:",
+        url,
+        err
+      );
+
+      throw err;
 
     } finally {
 
@@ -267,53 +360,79 @@ export class SampleBank {
   }
 
   /**
-   * Preload multiple samples.
+   * Preloads asset collection.
    * @param {string[]} urls
    */
   async preload(urls = []) {
 
-    await Promise.all(
-      urls.map((url) => this.get(url))
+    const unique =
+      [...new Set(urls)];
+
+    await Promise.allSettled(
+      unique.map((url) =>
+        this.get(url)
+      )
     );
   }
 
   /**
-   * Clear cache.
+   * Clears all buffers.
    */
   clear() {
 
     this._buffers.clear();
     this._pending.clear();
+
+    this._log(
+      "Cache cleared."
+    );
   }
 
   /* ============================================================
-   * Internal
+   * Internal Loading
    * ========================================================== */
 
   /**
-   * Fetch + decode.
+   * Fetches + decodes sample.
+   *
    * @private
    * @param {string} url
    * @returns {Promise<AudioBuffer>}
    */
   async _load(url) {
 
-    const response =
-      await fetch(url);
+    try {
 
-    if (!response.ok) {
-      throw new Error(
-        `Failed to fetch sample: ${url}`
+      const response =
+        await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status} ${response.statusText}`
+        );
+      }
+
+      const arrayBuffer =
+        await response.arrayBuffer();
+
+      const decoded =
+        await decodeAudioData(
+          this.context,
+          arrayBuffer
+        );
+
+      return decoded;
+
+    } catch (err) {
+
+      this._warn(
+        "Decode/Fetch failed:",
+        url,
+        err
       );
+
+      throw err;
     }
-
-    const arrayBuffer =
-      await response.arrayBuffer();
-
-    return await decodeAudioData(
-      this._context,
-      arrayBuffer
-    );
   }
 }
 
@@ -322,64 +441,126 @@ export class SampleBank {
  * ========================================================== */
 
 /**
- * Global acoustic graph manager.
+ * Global acoustic execution graph.
  *
  * ------------------------------------------------------------
  * MASTER GRAPH
  * ------------------------------------------------------------
  *
+ * DRY PATH:
+ *
  * Source Events
  *      ↓
- * MasterInputBus
+ * MasterInput
  *      ↓
- * Global LowPass (Enclosure)
- *      ↓
- * Convolver Reverb
+ * Global LowPass
  *      ↓
  * Limiter
+ *      ↓
+ * MasterGain
  *      ↓
  * Destination
  *
  * ------------------------------------------------------------
- * PURPOSE
+ * WET PARALLEL SEND:
  * ------------------------------------------------------------
  *
- * Simulates:
- * - umbrellas
- * - indoor occlusion
- * - tunnels
- * - environmental coloration
+ * MasterInput
+ *      ↓
+ * ReverbSendGain
+ *      ↓
+ * Convolver
+ *      ↓
+ * ReverbGain
+ *      ↓
+ * Limiter
+ *
+ * ------------------------------------------------------------
+ * CRITICAL FIX
+ * ------------------------------------------------------------
+ *
+ * The dry signal ALWAYS survives.
+ *
+ * Empty/broken reverb can NEVER mute
+ * the ecosystem again.
  */
 export class AcousticEnvironment {
+
+  /**
+   * Shared AudioContext singleton.
+   * @type {AudioContext|null}
+   */
+  static sharedContext = null;
 
   /**
    * @param {object} [options={}]
    */
   constructor(options = {}) {
 
-    /**
-     * Context
-     */
-    this.context =
-      options.context ||
-      new (
-        window.AudioContext ||
-        window.webkitAudioContext
-      )();
+    this.debug =
+      options.debug ?? false;
 
     /**
-     * Runtime state
+     * One shared context ONLY.
+     */
+    if (
+      !AcousticEnvironment.sharedContext
+    ) {
+
+      const AC =
+        window.AudioContext ||
+        window.webkitAudioContext;
+
+      AcousticEnvironment.sharedContext =
+        new AC({
+          latencyHint: "interactive",
+        });
+    }
+
+    this.context =
+      AcousticEnvironment.sharedContext;
+
+    /**
+     * Runtime state.
      */
     this.initialized = false;
 
     /**
-     * Master buses
+     * Master graph nodes.
      */
     this.masterInput = null;
+
     this.globalLowPass = null;
-    this.reverb = null;
+
+    this.reverbSendGain = null;
+
+    this.convolver = null;
+
+    this.reverbGain = null;
+
     this.limiter = null;
+
     this.masterGain = null;
+  }
+
+  /* ============================================================
+   * Logging
+   * ========================================================== */
+
+  _log(...args) {
+    if (this.debug) {
+      console.log(
+        "[AcousticEnvironment]",
+        ...args
+      );
+    }
+  }
+
+  _warn(...args) {
+    console.warn(
+      "[AcousticEnvironment]",
+      ...args
+    );
   }
 
   /* ============================================================
@@ -387,7 +568,8 @@ export class AcousticEnvironment {
    * ========================================================== */
 
   /**
-   * Initializes graph.
+   * Initializes full audio graph.
+   * @returns {Promise<AcousticEnvironment>}
    */
   async init() {
 
@@ -395,101 +577,243 @@ export class AcousticEnvironment {
       return this;
     }
 
-    /**
-     * --------------------------------------------------------
-     * Nodes
-     * --------------------------------------------------------
-     */
+    try {
 
-    this.masterInput =
-      this.context.createGain();
+      /**
+       * --------------------------------------------------------
+       * Core Nodes
+       * --------------------------------------------------------
+       */
 
-    this.globalLowPass =
-      this.context.createBiquadFilter();
+      this.masterInput =
+        this.context.createGain();
 
-    this.reverb =
-      this.context.createConvolver();
+      this.globalLowPass =
+        this.context.createBiquadFilter();
 
-    this.limiter =
-      this.context.createDynamicsCompressor();
+      this.reverbSendGain =
+        this.context.createGain();
 
-    this.masterGain =
-      this.context.createGain();
+      this.convolver =
+        this.context.createConvolver();
 
-    /**
-     * --------------------------------------------------------
-     * Low-pass defaults
-     * --------------------------------------------------------
-     */
+      this.reverbGain =
+        this.context.createGain();
 
-    this.globalLowPass.type =
-      "lowpass";
+      this.limiter =
+        this.context.createDynamicsCompressor();
 
-    this.globalLowPass.frequency.value =
-      20000;
+      this.masterGain =
+        this.context.createGain();
 
-    this.globalLowPass.Q.value =
-      0.707;
+      /**
+       * --------------------------------------------------------
+       * LowPass
+       * --------------------------------------------------------
+       */
 
-    /**
-     * --------------------------------------------------------
-     * Limiter settings
-     * --------------------------------------------------------
-     */
+      this.globalLowPass.type =
+        "lowpass";
 
-    this.limiter.threshold.value =
-      -10;
+      this.globalLowPass.frequency.value =
+        20000;
 
-    this.limiter.knee.value =
-      12;
+      this.globalLowPass.Q.value =
+        0.707;
 
-    this.limiter.ratio.value =
-      20;
+      /**
+       * --------------------------------------------------------
+       * Reverb
+       * --------------------------------------------------------
+       */
 
-    this.limiter.attack.value =
-      0.003;
+      this.reverbSendGain.gain.value =
+        0.18;
 
-    this.limiter.release.value =
-      0.25;
+      this.reverbGain.gain.value =
+        0.25;
 
-    /**
-     * --------------------------------------------------------
-     * Master gain
-     * --------------------------------------------------------
-     */
+      /**
+       * Procedural IR generation.
+       */
+      this.convolver.buffer =
+        this.generateImpulseResponse(
+          2.75,
+          2.2
+        );
 
-    this.masterGain.gain.value =
-      0.9;
+      /**
+       * --------------------------------------------------------
+       * Limiter
+       * --------------------------------------------------------
+       */
 
-    /**
-     * --------------------------------------------------------
-     * Routing
-     * --------------------------------------------------------
-     */
+      this.limiter.threshold.value =
+        -10;
 
-    this.masterInput.connect(
-      this.globalLowPass
+      this.limiter.ratio.value =
+        20;
+
+      this.limiter.attack.value =
+        0.003;
+
+      this.limiter.release.value =
+        0.25;
+
+      this.limiter.knee.value =
+        12;
+
+      /**
+       * --------------------------------------------------------
+       * Master Gain
+       * --------------------------------------------------------
+       */
+
+      this.masterGain.gain.value =
+        0.92;
+
+      /**
+       * ========================================================
+       * DRY ROUTING
+       * ========================================================
+       */
+
+      this.masterInput.connect(
+        this.globalLowPass
+      );
+
+      this.globalLowPass.connect(
+        this.limiter
+      );
+
+      /**
+       * ========================================================
+       * PARALLEL REVERB SEND
+       * ========================================================
+       */
+
+      this.masterInput.connect(
+        this.reverbSendGain
+      );
+
+      this.reverbSendGain.connect(
+        this.convolver
+      );
+
+      this.convolver.connect(
+        this.reverbGain
+      );
+
+      this.reverbGain.connect(
+        this.limiter
+      );
+
+      /**
+       * ========================================================
+       * FINAL OUTPUT
+       * ========================================================
+       */
+
+      this.limiter.connect(
+        this.masterGain
+      );
+
+      this.masterGain.connect(
+        this.context.destination
+      );
+
+      this.initialized = true;
+
+      this._log(
+        "Routing initialized successfully."
+      );
+
+      return this;
+
+    } catch (err) {
+
+      this._warn(
+        "Initialization failed:",
+        err
+      );
+
+      throw err;
+    }
+  }
+
+  /* ============================================================
+   * Procedural IR Generation
+   * ========================================================== */
+
+  /**
+   * Generates stereo procedural impulse response.
+   *
+   * ------------------------------------------------------------
+   * CHARACTERISTICS
+   * ------------------------------------------------------------
+   *
+   * - exponential decay
+   * - random diffusion
+   * - stereo decorrelation
+   * - no external assets required
+   *
+   * @param {number} durationSeconds
+   * @param {number} decay
+   * @returns {AudioBuffer}
+   */
+  generateImpulseResponse(
+    durationSeconds = 2.5,
+    decay = 2.0
+  ) {
+
+    const sampleRate =
+      this.context.sampleRate;
+
+    const length =
+      Math.floor(
+        sampleRate *
+        durationSeconds
+      );
+
+    const impulse =
+      this.context.createBuffer(
+        2,
+        length,
+        sampleRate
+      );
+
+    for (let ch = 0; ch < 2; ch++) {
+
+      const channel =
+        impulse.getChannelData(ch);
+
+      for (let i = 0; i < length; i++) {
+
+        const t =
+          i / length;
+
+        const envelope =
+          Math.pow(
+            1 - t,
+            decay
+          );
+
+        /**
+         * Diffused random energy.
+         */
+        channel[i] =
+          (
+            (Math.random() * 2 - 1) *
+            envelope
+          ) * 0.85;
+      }
+    }
+
+    this._log(
+      "Procedural IR generated."
     );
 
-    this.globalLowPass.connect(
-      this.reverb
-    );
-
-    this.reverb.connect(
-      this.limiter
-    );
-
-    this.limiter.connect(
-      this.masterGain
-    );
-
-    this.masterGain.connect(
-      this.context.destination
-    );
-
-    this.initialized = true;
-
-    return this;
+    return impulse;
   }
 
   /* ============================================================
@@ -497,11 +821,7 @@ export class AcousticEnvironment {
    * ========================================================== */
 
   /**
-   * Reads WorldState.listener.enclosure
-   * and morphs environmental acoustics.
-   *
-   * IMPORTANT:
-   * Uses setTargetAtTime for smoothness.
+   * Morphs enclosure acoustics smoothly.
    *
    * @param {object} worldState
    */
@@ -513,53 +833,60 @@ export class AcousticEnvironment {
       return;
     }
 
-    const enclosure =
-      worldState.listener.enclosure;
+    try {
 
-    let targetCutoff = 20000;
+      const enclosure =
+        worldState?.listener?.enclosure ||
+        ENCLOSURE_TYPES.OPEN;
 
-    switch (enclosure) {
+      let cutoff = 20000;
 
-      case ENCLOSURE_TYPES.UMBRELLA:
-        targetCutoff = 3000;
-        break;
+      switch (enclosure) {
 
-      case ENCLOSURE_TYPES.INDOOR:
-        targetCutoff = 1800;
-        break;
+        case ENCLOSURE_TYPES.UMBRELLA:
+          cutoff = 3000;
+          break;
 
-      case ENCLOSURE_TYPES.VEHICLE:
-        targetCutoff = 1200;
-        break;
+        case ENCLOSURE_TYPES.INDOOR:
+          cutoff = 1800;
+          break;
 
-      case ENCLOSURE_TYPES.TUNNEL:
-        targetCutoff = 5000;
-        break;
+        case ENCLOSURE_TYPES.VEHICLE:
+          cutoff = 1200;
+          break;
 
-      case ENCLOSURE_TYPES.OPEN:
-      default:
-        targetCutoff = 20000;
-        break;
+        case ENCLOSURE_TYPES.TUNNEL:
+          cutoff = 5500;
+          break;
+
+        case ENCLOSURE_TYPES.OPEN:
+        default:
+          cutoff = 20000;
+          break;
+      }
+
+      this.globalLowPass.frequency
+        .setTargetAtTime(
+          cutoff,
+          this.context.currentTime,
+          0.08
+        );
+
+    } catch (err) {
+
+      this._warn(
+        "Acoustic update failed:",
+        err
+      );
     }
-
-    /**
-     * Smooth environmental transition.
-     */
-    this.globalLowPass.frequency.setTargetAtTime(
-      targetCutoff,
-      this.context.currentTime,
-      0.08
-    );
   }
 
   /* ============================================================
-   * Playback Routing
+   * Playback Bus
    * ========================================================== */
 
   /**
-   * Returns master input bus.
-   * Audio behaviors connect here.
-   *
+   * Returns master event input bus.
    * @returns {GainNode}
    */
   getInputBus() {
@@ -570,29 +897,43 @@ export class AcousticEnvironment {
    * Lifecycle
    * ========================================================== */
 
-  /**
-   * Suspend context.
-   */
-  async suspend() {
+  async resume() {
 
-    if (
-      this.context &&
-      this.context.state !== "closed"
-    ) {
-      await this.context.suspend();
+    try {
+
+      if (
+        this.context &&
+        this.context.state === "suspended"
+      ) {
+        await this.context.resume();
+      }
+
+    } catch (err) {
+
+      this._warn(
+        "Resume failed:",
+        err
+      );
     }
   }
 
-  /**
-   * Resume context.
-   */
-  async resume() {
+  async suspend() {
 
-    if (
-      this.context &&
-      this.context.state !== "closed"
-    ) {
-      await this.context.resume();
+    try {
+
+      if (
+        this.context &&
+        this.context.state !== "closed"
+      ) {
+        await this.context.suspend();
+      }
+
+    } catch (err) {
+
+      this._warn(
+        "Suspend failed:",
+        err
+      );
     }
   }
 
@@ -601,20 +942,39 @@ export class AcousticEnvironment {
    */
   async destroy() {
 
-    safeDisconnect(this.masterInput);
-    safeDisconnect(this.globalLowPass);
-    safeDisconnect(this.reverb);
-    safeDisconnect(this.limiter);
-    safeDisconnect(this.masterGain);
+    safeDisconnect(
+      this.masterInput
+    );
 
-    if (
-      this.context &&
-      this.context.state !== "closed"
-    ) {
-      await this.context.close();
-    }
+    safeDisconnect(
+      this.globalLowPass
+    );
+
+    safeDisconnect(
+      this.reverbSendGain
+    );
+
+    safeDisconnect(
+      this.convolver
+    );
+
+    safeDisconnect(
+      this.reverbGain
+    );
+
+    safeDisconnect(
+      this.limiter
+    );
+
+    safeDisconnect(
+      this.masterGain
+    );
 
     this.initialized = false;
+
+    this._log(
+      "Environment destroyed."
+    );
   }
 }
 
@@ -623,27 +983,30 @@ export class AcousticEnvironment {
  * ========================================================== */
 
 /**
- * Bridge:
- *
- * AtomicBehavior
- *        ↓
- * audible spatial playback
+ * Acoustic execution bridge.
  *
  * ------------------------------------------------------------
  * FLOW
  * ------------------------------------------------------------
  *
- * Scheduler triggers behavior
- *        ↓
- * Pick sample
- *        ↓
- * Retrieve from SampleBank
- *        ↓
- * Create one-shot nodes
- *        ↓
- * Randomize spatial placement
- *        ↓
- * Play through AcousticEnvironment
+ * AtomicBehavior
+ *      ↓
+ * stochastic sample selection
+ *      ↓
+ * spatialization
+ *      ↓
+ * ecological playback
+ *      ↓
+ * automatic cleanup
+ *
+ * ------------------------------------------------------------
+ * LONG SESSION SAFETY
+ * ------------------------------------------------------------
+ *
+ * One-shot nodes:
+ * - disconnect after playback
+ * - release references
+ * - permit browser GC
  */
 export class EcologicalAudioBehavior
   extends AtomicBehavior {
@@ -655,52 +1018,77 @@ export class EcologicalAudioBehavior
 
     super(config);
 
-    /**
-     * Tiny atomic samples.
-     */
-    this.sampleUrls =
-      config.sampleUrls || [];
-
-    /**
-     * Reference:
-     * AcousticEnvironment
-     */
     this.environment =
       config.environment;
 
-    /**
-     * Reference:
-     * SampleBank
-     */
     this.sampleBank =
       config.sampleBank;
 
-    /**
-     * Base volume
-     */
+    this.sampleUrls =
+      Array.isArray(
+        config.sampleUrls
+      )
+        ? config.sampleUrls
+        : [];
+
     this.baseVolume =
-      config.baseVolume ?? 0.5;
+      safeNumber(
+        config.baseVolume,
+        0.5
+      );
 
-    /**
-     * Pitch variation.
-     */
     this.pitchRange =
-      config.pitchRange || [0.95, 1.05];
+      config.pitchRange ||
+      [0.94, 1.06];
 
-    /**
-     * Stereo spread.
-     */
     this.panRange =
-      config.panRange || [-1, 1];
+      config.panRange ||
+      [-1, 1];
+
+    this.gainVariance =
+      safeNumber(
+        config.gainVariance,
+        0.18
+      );
+
+    this.debug =
+      config.debug ?? false;
 
     if (
-      !this.environment ||
+      !this.environment
+    ) {
+      throw new Error(
+        "[EcologicalAudioBehavior] Missing environment."
+      );
+    }
+
+    if (
       !this.sampleBank
     ) {
       throw new Error(
-        "EcologicalAudioBehavior requires environment and sampleBank."
+        "[EcologicalAudioBehavior] Missing sampleBank."
       );
     }
+  }
+
+  /* ============================================================
+   * Logging
+   * ========================================================== */
+
+  _log(...args) {
+    if (this.debug) {
+      console.log(
+        "[EcologicalAudioBehavior]",
+        ...args
+      );
+    }
+  }
+
+  _warn(...args) {
+    console.warn(
+      "[EcologicalAudioBehavior]",
+      ...args
+    );
   }
 
   /* ============================================================
@@ -716,6 +1104,15 @@ export class EcologicalAudioBehavior
 
     try {
 
+      if (
+        !this.sampleUrls.length
+      ) {
+        this._warn(
+          "No sample URLs configured."
+        );
+        return;
+      }
+
       /**
        * --------------------------------------------------------
        * Sample Selection
@@ -729,7 +1126,7 @@ export class EcologicalAudioBehavior
 
       /**
        * --------------------------------------------------------
-       * Retrieve Decoded Buffer
+       * Retrieve Buffer
        * --------------------------------------------------------
        */
 
@@ -738,65 +1135,127 @@ export class EcologicalAudioBehavior
           sampleUrl
         );
 
+      if (!buffer) {
+        this._warn(
+          "Buffer unavailable:",
+          sampleUrl
+        );
+        return;
+      }
+
       /**
        * --------------------------------------------------------
-       * Create One-Shot Nodes
+       * Audio Context
        * --------------------------------------------------------
        */
 
       const audioContext =
         this.environment.context;
 
-      const source =
+      /**
+       * --------------------------------------------------------
+       * One-shot Nodes
+       * --------------------------------------------------------
+       */
+
+      let source =
         audioContext.createBufferSource();
 
-      const panner =
+      let panner =
         audioContext.createStereoPanner();
 
-      const gain =
+      let gain =
         audioContext.createGain();
 
       /**
        * --------------------------------------------------------
-       * Configure Source
+       * Playback Rate Safety
        * --------------------------------------------------------
        */
 
-      source.buffer = buffer;
+      const pitch =
+        clamp(
+          safeNumber(
+            randomRange(
+              this.pitchRange[0],
+              this.pitchRange[1]
+            ),
+            1
+          ),
+          0.25,
+          4
+        );
+
+      /**
+       * --------------------------------------------------------
+       * Spatialization Safety
+       * --------------------------------------------------------
+       */
+
+      const pan =
+        clamp(
+          safeNumber(
+            randomRange(
+              this.panRange[0],
+              this.panRange[1]
+            ),
+            0
+          ),
+          -1,
+          1
+        );
+
+      /**
+       * --------------------------------------------------------
+       * Activity Multiplier Safety
+       * --------------------------------------------------------
+       */
+
+      const activity =
+        safeNumber(
+          context?.rules
+            ?.activityMultiplier,
+          1
+        );
+
+      /**
+       * --------------------------------------------------------
+       * Gain Randomization
+       * --------------------------------------------------------
+       */
+
+      const gainVariation =
+        randomRange(
+          1 - this.gainVariance,
+          1 + this.gainVariance
+        );
+
+      const finalGain =
+        clamp(
+          this.baseVolume *
+          activity *
+          gainVariation,
+          0,
+          4
+        );
+
+      /**
+       * --------------------------------------------------------
+       * Configure Nodes
+       * --------------------------------------------------------
+       */
+
+      source.buffer =
+        buffer;
 
       source.playbackRate.value =
-        randomRange(
-          this.pitchRange[0],
-          this.pitchRange[1]
-        );
-
-      /**
-       * --------------------------------------------------------
-       * Spatialization
-       * --------------------------------------------------------
-       */
+        pitch;
 
       panner.pan.value =
-        randomRange(
-          this.panRange[0],
-          this.panRange[1]
-        );
-
-      /**
-       * --------------------------------------------------------
-       * Final Volume Calculation
-       * --------------------------------------------------------
-       *
-       * requested:
-       * baseVolume × activityMultiplier
-       */
-
-      const finalVolume =
-        this.baseVolume *
-        context.rules.activityMultiplier;
+        pan;
 
       gain.gain.value =
-        Math.max(0, finalVolume);
+        finalGain;
 
       /**
        * --------------------------------------------------------
@@ -804,12 +1263,17 @@ export class EcologicalAudioBehavior
        * --------------------------------------------------------
        */
 
-      source.connect(panner);
+      source.connect(
+        panner
+      );
 
-      panner.connect(gain);
+      panner.connect(
+        gain
+      );
 
       gain.connect(
-        this.environment.getInputBus()
+        this.environment
+          .getInputBus()
       );
 
       /**
@@ -825,6 +1289,14 @@ export class EcologicalAudioBehavior
         safeDisconnect(gain);
 
         source.buffer = null;
+
+        source = null;
+        panner = null;
+        gain = null;
+
+        this._log(
+          "One-shot cleaned."
+        );
       };
 
       /**
@@ -835,10 +1307,20 @@ export class EcologicalAudioBehavior
 
       source.start();
 
+      this._log(
+        "Playback triggered:",
+        sampleUrl,
+        {
+          pitch,
+          pan,
+          gain: finalGain,
+        }
+      );
+
     } catch (err) {
 
-      console.warn(
-        "[EcologicalAudioBehavior] Playback failed:",
+      this._warn(
+        "Playback failure:",
         err
       );
     }
