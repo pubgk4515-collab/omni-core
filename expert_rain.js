@@ -182,9 +182,13 @@ export default class RainExpert {
   /**
    * Receives state updates.
    *
+   * IMPORTANT:
+   * This method name MUST match
+   * the MoERouter contract.
+   *
    * @param {object} worldState
    */
-  onStateUpdate(
+  onWorldStateUpdate(
     worldState
   ) {
 
