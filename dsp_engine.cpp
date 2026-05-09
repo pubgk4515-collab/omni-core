@@ -1,9 +1,8 @@
 // ============================================================
 // dsp_engine.cpp
+// Algorithmic Video Factory
 // Infinite Generative Ambient Engine
-// Refined Brian Eno + Zimmer Atmospheres
-// Click-Free / Stable / WASM Ready
-// C++17
+// WASM / Emscripten / C++17
 // ============================================================
 
 #include <cmath>
@@ -23,12 +22,14 @@ constexpr int kMaxDelaySize = 65536;
 // ============================================================
 
 enum ParamID {
+
     TIME_STRETCH     = 0,
     REVERB_MIX       = 1,
     HIGH_PASS_FREQ   = 2,
     SATURATION       = 3,
     MODULE_INTENSITY = 4,
-    ENGINE_TYPE      = 5
+    ENGINE_TYPE      = 5,
+    SCALE_ID         = 6
 };
 
 // ============================================================
@@ -43,8 +44,18 @@ inline float zap(float x) {
         : x;
 }
 
+inline float midiToFreq(float midi) {
+
+    return
+        440.0f *
+        std::pow(
+            2.0f,
+            (midi - 69.0f) / 12.0f
+        );
+}
+
 // ============================================================
-// FAST RNG
+// RNG
 // ============================================================
 
 struct FastRandom {
@@ -75,7 +86,7 @@ struct FastRandom {
 };
 
 // ============================================================
-// SMOOTH VALUE
+// SMOOTHER
 // ============================================================
 
 struct SmoothValue {
@@ -83,7 +94,7 @@ struct SmoothValue {
     float current = 0.0f;
     float target  = 0.0f;
 
-    float speed = 0.0005f;
+    float speed = 0.0004f;
 
     inline void setTarget(float t) {
 
@@ -93,7 +104,8 @@ struct SmoothValue {
     inline float process() {
 
         current +=
-            speed * (target - current);
+            speed *
+            (target - current);
 
         return current;
     }
@@ -141,7 +153,7 @@ struct PrimeLFO {
 };
 
 // ============================================================
-// BIQUAD DF2T
+// BIQUAD
 // ============================================================
 
 struct Biquad {
@@ -325,7 +337,7 @@ struct DCBlocker {
 };
 
 // ============================================================
-// TRIANGLE OSC
+// TRI OSC
 // ============================================================
 
 struct TriangleOsc {
@@ -360,7 +372,7 @@ struct TriangleOsc {
 };
 
 // ============================================================
-// PINK NOISE
+// NOISE
 // ============================================================
 
 struct PinkNoise {
@@ -392,6 +404,28 @@ struct PinkNoise {
             (b0 + b1 + b2 +
             white * 0.1848f)
             * 0.045f;
+    }
+};
+
+struct BrownNoise {
+
+    FastRandom rng;
+
+    float state = 0.0f;
+
+    inline float process() {
+
+        state +=
+            rng.nextFloat() * 0.02f;
+
+        state *= 0.995f;
+
+        return
+            std::clamp(
+                state,
+                -1.0f,
+                1.0f
+            );
     }
 };
 
@@ -467,7 +501,7 @@ struct MoogLadder {
 };
 
 // ============================================================
-// SOFT FDN REVERB
+// FDN REVERB
 // ============================================================
 
 struct FDNReverb {
@@ -490,7 +524,6 @@ struct FDNReverb {
     Biquad dampers[kReverbLines];
 
     float wet = 0.18f;
-
     float feedback = 0.84f;
 
     void init(float sr) {
@@ -498,9 +531,8 @@ struct FDNReverb {
         for (int i = 0; i < kReverbLines; ++i) {
 
             dampers[i].setLowpass(
-                3800.0f,
-                sr,
-                0.707f
+                4200.0f,
+                sr
             );
         }
     }
@@ -525,8 +557,7 @@ struct FDNReverb {
             delayed =
                 dampers[i].process(delayed);
 
-            outputs[i] =
-                delayed;
+            outputs[i] = delayed;
 
             sum += delayed;
         }
@@ -540,8 +571,7 @@ struct FDNReverb {
                 outputs[i] - avg;
 
             buffers[i][writePos[i]] =
-                input +
-                fb * feedback;
+                input + fb * feedback;
 
             writePos[i]++;
 
@@ -567,26 +597,16 @@ struct GenerativeDrone {
 
     PrimeLFO ampLFO[kVoices];
     PrimeLFO cutoffLFO[kVoices];
-    PrimeLFO panLFO[kVoices];
+
+    SmoothValue cutoffSmooth;
 
     PinkNoise noise;
 
     MoogLadder ladder;
 
-    SmoothValue cutoffSmooth;
-
-    float left = 0.0f;
-    float right = 0.0f;
+    int scaleID = 0;
 
     void init(float sr) {
-
-        const float freqs[kVoices] = {
-            55.0f,
-            82.5f,
-            110.0f,
-            123.75f,
-            165.0f
-        };
 
         const float ampPrimes[kVoices] = {
             0.011f,
@@ -604,39 +624,22 @@ struct GenerativeDrone {
             0.043f
         };
 
-        const float panPrimes[kVoices] = {
-            0.047f,
-            0.053f,
-            0.059f,
-            0.061f,
-            0.067f
-        };
-
         for (int i = 0; i < kVoices; ++i) {
 
             osc[i].init(sr);
 
-            osc[i].setFreq(freqs[i]);
-
             ampLFO[i].init(
                 sr,
                 ampPrimes[i],
-                0.30f,
-                0.70f
+                0.25f,
+                0.75f
             );
 
             cutoffLFO[i].init(
                 sr,
                 cutoffPrimes[i],
-                280.0f,
-                720.0f
-            );
-
-            panLFO[i].init(
-                sr,
-                panPrimes[i],
-                0.45f,
-                0.5f
+                250.0f,
+                700.0f
             );
         }
 
@@ -644,7 +647,70 @@ struct GenerativeDrone {
 
         cutoffSmooth.current = 700.0f;
         cutoffSmooth.target  = 700.0f;
-        cutoffSmooth.speed   = 0.00015f;
+    }
+
+    void setScale(int id) {
+
+        scaleID = id;
+
+        const float rootMidi = 33.0f;
+
+        float intervals[kVoices];
+
+        switch (scaleID) {
+
+            // Cinematic Space
+            case 0:
+
+                intervals[0] = 0.0f;
+                intervals[1] = 7.0f;
+                intervals[2] = 14.0f;
+                intervals[3] = 19.0f;
+                intervals[4] = 24.0f;
+
+                break;
+
+            // Himalayan Zen
+            case 1:
+
+                intervals[0] = 0.0f;
+                intervals[1] = 4.0f;
+                intervals[2] = 7.0f;
+                intervals[3] = 9.0f;
+                intervals[4] = 16.0f;
+
+                break;
+
+            // Cyberpunk
+            case 2:
+
+                intervals[0] = 0.0f;
+                intervals[1] = 3.0f;
+                intervals[2] = 6.0f;
+                intervals[3] = 15.0f;
+                intervals[4] = 18.0f;
+
+                break;
+
+            default:
+
+                intervals[0] = 0.0f;
+                intervals[1] = 7.0f;
+                intervals[2] = 14.0f;
+                intervals[3] = 19.0f;
+                intervals[4] = 24.0f;
+
+                break;
+        }
+
+        for (int i = 0; i < kVoices; ++i) {
+
+            osc[i].setFreq(
+                midiToFreq(
+                    rootMidi + intervals[i]
+                )
+            );
+        }
     }
 
     inline float process() {
@@ -658,34 +724,20 @@ struct GenerativeDrone {
             float amp =
                 ampLFO[i].process();
 
-            float pan =
-                panLFO[i].process();
-
             cutoff +=
                 cutoffLFO[i].process();
 
             float voice =
                 osc[i].process();
 
-            // harmonic blur
             voice +=
-                noise.process() * 0.003f;
-
-            voice *= amp;
-
-            // stereo energy fold
-            float l =
-                voice * (1.0f - pan);
-
-            float r =
-                voice * pan;
+                noise.process() * 0.002f;
 
             mix +=
-                (l + r) * 0.12f;
+                voice * amp * 0.11f;
         }
 
-        cutoff /=
-            kVoices;
+        cutoff /= kVoices;
 
         cutoffSmooth.setTarget(
             cutoff
@@ -693,7 +745,7 @@ struct GenerativeDrone {
 
         ladder.setParams(
             cutoffSmooth.process(),
-            0.16f
+            0.15f
         );
 
         return
@@ -703,7 +755,7 @@ struct GenerativeDrone {
 };
 
 // ============================================================
-// PROCEDURAL WIND
+// WIND
 // ============================================================
 
 struct ProceduralWind {
@@ -731,9 +783,8 @@ struct ProceduralWind {
         );
 
         lowpass.setLowpass(
-            1600.0f,
-            sr,
-            0.707f
+            1700.0f,
+            sr
         );
 
         freqLFO.init(
@@ -746,13 +797,12 @@ struct ProceduralWind {
         ampLFO.init(
             sr,
             0.013f,
-            0.18f,
-            0.82f
+            0.20f,
+            0.80f
         );
 
         freqSmooth.current = 240.0f;
         freqSmooth.target  = 240.0f;
-        freqSmooth.speed   = 0.0002f;
     }
 
     inline float process() {
@@ -761,31 +811,103 @@ struct ProceduralWind {
             freqLFO.process()
         );
 
-        float smoothFreq =
-            freqSmooth.process();
-
         bandpass.setBandpass(
-            smoothFreq,
+            freqSmooth.process(),
             sr,
             0.55f
         );
 
-        float amp =
-            ampLFO.process();
-
-        float n =
+        float out =
             noise.process();
 
-        float out =
-            bandpass.process(n);
+        out =
+            bandpass.process(out);
 
         out =
             lowpass.process(out);
 
-        out *= amp;
+        out *=
+            ampLFO.process();
+
+        return out * 0.40f;
+    }
+};
+
+// ============================================================
+// RAIN / THUNDER
+// ============================================================
+
+struct ProceduralRain {
+
+    PinkNoise rainNoise;
+    BrownNoise thunderNoise;
+
+    Biquad rainHP;
+    Biquad thunderLP;
+
+    FastRandom rng;
+
+    float thunderEnv = 0.0f;
+
+    int counter = 0;
+    int nextStrike = 44100 * 8;
+
+    float sr = 44100.0f;
+
+    void init(float sampleRate) {
+
+        sr = sampleRate;
+
+        rainHP.setHighpass(
+            4500.0f,
+            sr
+        );
+
+        thunderLP.setLowpass(
+            120.0f,
+            sr
+        );
+    }
+
+    inline float process() {
+
+        float rain =
+            rainNoise.process();
+
+        rain =
+            rainHP.process(rain);
+
+        counter++;
+
+        if (counter >= nextStrike) {
+
+            thunderEnv = 1.0f;
+
+            nextStrike =
+                static_cast<int>(
+                    sr *
+                    (7.0f + rng.nextUnit() * 3.0f)
+                );
+
+            counter = 0;
+        }
+
+        thunderEnv *= 0.99993f;
+
+        float thunder =
+            thunderNoise.process();
+
+        thunder =
+            thunderLP.process(thunder);
+
+        thunder *=
+            thunderEnv *
+            thunderEnv *
+            2.5f;
 
         return
-            out * 0.38f;
+            rain * 0.25f +
+            thunder;
     }
 };
 
@@ -801,12 +923,11 @@ struct OmniEngine {
 
     GenerativeDrone drone;
     ProceduralWind wind;
-
-    Biquad highpass;
-
-    bool hpEnabled = false;
+    ProceduralRain rain;
 
     FDNReverb reverb;
+
+    Biquad highpass;
 
     DCBlocker dc;
 
@@ -814,6 +935,10 @@ struct OmniEngine {
     SmoothValue satSmooth;
 
     float outputBuffer[kBlockSize] = {};
+
+    bool hpEnabled = false;
+
+    int scaleID = 0;
 
     void init(
         int sr,
@@ -826,6 +951,9 @@ struct OmniEngine {
 
         drone.init(sr);
         wind.init(sr);
+        rain.init(sr);
+
+        drone.setScale(0);
 
         highpass.setHighpass(
             25.0f,
@@ -836,11 +964,9 @@ struct OmniEngine {
 
         wetSmooth.current = 0.18f;
         wetSmooth.target  = 0.18f;
-        wetSmooth.speed   = 0.0003f;
 
         satSmooth.current = 0.0f;
         satSmooth.target  = 0.0f;
-        satSmooth.speed   = 0.0005f;
     }
 
     inline float saturate(
@@ -873,22 +999,18 @@ struct OmniEngine {
             switch (engineType) {
 
                 case 0:
-
-                    dry =
-                        drone.process();
-
+                    dry = drone.process();
                     break;
 
                 case 1:
+                    dry = wind.process();
+                    break;
 
-                    dry =
-                        wind.process();
-
+                case 2:
+                    dry = rain.process();
                     break;
 
                 default:
-
-                    dry = 0.0f;
                     break;
             }
 
@@ -908,15 +1030,12 @@ struct OmniEngine {
             dry =
                 reverb.process(dry);
 
-            dry =
+            outputBuffer[i] =
                 std::clamp(
                     dry,
                     -1.0f,
                     1.0f
                 );
-
-            outputBuffer[i] =
-                dry;
         }
 
         return outputBuffer;
@@ -924,7 +1043,7 @@ struct OmniEngine {
 };
 
 // ============================================================
-// GLOBAL ENGINE POOL
+// GLOBAL POOL
 // ============================================================
 
 static OmniEngine gEngines[kMaxEngines];
@@ -1033,6 +1152,17 @@ void setParameter(
 
             eng->engineType =
                 static_cast<int>(value);
+
+            break;
+
+        case SCALE_ID:
+
+            eng->scaleID =
+                static_cast<int>(value);
+
+            eng->drone.setScale(
+                eng->scaleID
+            );
 
             break;
 
