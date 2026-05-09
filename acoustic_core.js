@@ -1,43 +1,31 @@
 /**
  * acoustic_core.js
  * Procedural Acoustic World Simulator
- * DSP + Routing Core
+ * DSP + Spatial Routing Core
  *
  * ------------------------------------------------------------
- * ARCHITECTURE
+ * RESPONSIBILITIES
  * ------------------------------------------------------------
  *
  * 1. SampleBank
- *    - async micro-sample loader/cache
+ *    - async loading
+ *    - decoded buffer caching
+ *    - deduplicated requests
  *
  * 2. AcousticEnvironment
- *    - global routing
- *    - lowpass enclosure simulation
- *    - procedural convolution reverb
- *    - limiter protection
+ *    - master routing graph
+ *    - environmental acoustics
+ *    - reverb + limiter
  *
  * 3. ParticleRainSynth
- *    - AAA-grade procedural rain engine
- *    - stereo stochastic droplet simulation
- *    - atmospheric rain bed
- *    - dynamic density morphing
+ *    - procedural stochastic rain synthesis
+ *    - spatialized droplet particles
+ *    - continuous atmospheric rain bed
  *
  * 4. EcologicalAudioBehavior
- *    - stochastic ecological sample playback
- *    - JIT ecological coherence gate
- *
- * ------------------------------------------------------------
- * DESIGN PHILOSOPHY
- * ------------------------------------------------------------
- *
- * This is NOT:
- * - a music player
- * - a looping ambience mp3 engine
- *
- * This IS:
- * - procedural acoustic simulation
- * - stochastic ecology infrastructure
- * - long-session world rendering
+ *    - stochastic ecological playback
+ *    - JIT ecological gating
+ *    - one-shot cleanup safety
  */
 
 import {
@@ -51,10 +39,23 @@ import {
  * Utility
  * ========================================================== */
 
+/**
+ * Random float.
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
 function random(min, max) {
   return Math.random() * (max - min) + min;
 }
 
+/**
+ * Clamp value.
+ * @param {number} v
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
 function clamp(v, min, max) {
   return Math.min(
     max,
@@ -62,47 +63,102 @@ function clamp(v, min, max) {
   );
 }
 
+/**
+ * Safe disconnect helper.
+ * @param {AudioNode} node
+ */
 function safeDisconnect(node) {
 
-  if (!node) return;
+  if (!node) {
+    return;
+  }
 
   try {
     node.disconnect();
   } catch (_) {}
 }
 
+/**
+ * Random array item.
+ * @template T
+ * @param {T[]} arr
+ * @returns {T}
+ */
+function randomChoice(arr) {
+  return arr[
+    Math.floor(
+      Math.random() * arr.length
+    )
+  ];
+}
+
 /* ============================================================
  * SampleBank
  * ========================================================== */
 
+/**
+ * Async decoded sample manager.
+ *
+ * Designed for:
+ * - birds
+ * - insects
+ * - traffic
+ * - typing
+ * - micro-events
+ */
 export class SampleBank {
 
+  /**
+   * @param {BaseAudioContext} context
+   */
   constructor(context) {
 
     this.context =
       context;
 
     /**
-     * Decoded AudioBuffers
+     * URL -> AudioBuffer
      */
     this.cache =
       new Map();
 
     /**
-     * Deduplicated pending requests
+     * URL -> Promise<AudioBuffer>
      */
     this.pending =
       new Map();
   }
 
+  /* ============================================================
+   * Public API
+   * ========================================================== */
+
+  /**
+   * Retrieves decoded AudioBuffer.
+   *
+   * @param {string} url
+   * @returns {Promise<AudioBuffer>}
+   */
   async get(url) {
 
+    if (!url) {
+      throw new Error(
+        "[SampleBank] Invalid URL."
+      );
+    }
+
+    /**
+     * Cached.
+     */
     if (this.cache.has(url)) {
       return this.cache.get(url);
     }
 
+    /**
+     * Already loading.
+     */
     if (this.pending.has(url)) {
-      return this.pending.get(url);
+      return await this.pending.get(url);
     }
 
     const promise =
@@ -131,23 +187,68 @@ export class SampleBank {
     }
   }
 
+  /**
+   * Preloads collection.
+   * @param {string[]} urls
+   */
+  async preload(urls = []) {
+
+    await Promise.allSettled(
+      urls.map((u) => this.get(u))
+    );
+  }
+
+  /**
+   * Clears memory cache.
+   */
+  clear() {
+
+    this.cache.clear();
+    this.pending.clear();
+  }
+
+  /* ============================================================
+   * Internal
+   * ========================================================== */
+
+  /**
+   * Fetch + decode.
+   *
+   * @private
+   * @param {string} url
+   * @returns {Promise<AudioBuffer>}
+   */
   async _load(url) {
 
-    const res =
-      await fetch(url);
+    try {
 
-    if (!res.ok) {
+      const response =
+        await fetch(url);
 
-      throw new Error(
-        `Failed loading sample: ${url}`
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      const arrayBuffer =
+        await response.arrayBuffer();
+
+      return await this.context
+        .decodeAudioData(
+          arrayBuffer
+        );
+
+    } catch (err) {
+
+      console.warn(
+        "[SampleBank] Failed loading:",
+        url,
+        err
       );
+
+      throw err;
     }
-
-    const arr =
-      await res.arrayBuffer();
-
-    return await this.context
-      .decodeAudioData(arr);
   }
 }
 
@@ -155,40 +256,67 @@ export class SampleBank {
  * AcousticEnvironment
  * ========================================================== */
 
+/**
+ * Global acoustic routing graph.
+ *
+ * ------------------------------------------------------------
+ * ROUTING
+ * ------------------------------------------------------------
+ *
+ * DRY:
+ *
+ * Input
+ *  -> LowPass
+ *  -> Limiter
+ *  -> Master
+ *  -> Destination
+ *
+ * WET:
+ *
+ * Input
+ *  -> ReverbSend
+ *  -> Convolver
+ *  -> ReverbGain
+ *  -> Limiter
+ */
 export class AcousticEnvironment {
 
-  static shared = null;
+  /**
+   * Shared singleton context.
+   * @type {AudioContext|null}
+   */
+  static sharedContext = null;
 
   constructor() {
 
     /**
-     * Shared singleton AudioContext
+     * One shared context ONLY.
      */
-
     if (
-      !AcousticEnvironment.shared
+      !AcousticEnvironment
+        .sharedContext
     ) {
 
-      AcousticEnvironment.shared =
-        new (
-          window.AudioContext ||
-          window.webkitAudioContext
-        )({
-          latencyHint:
-            "interactive",
-        });
+      const AC =
+        window.AudioContext ||
+        window.webkitAudioContext;
+
+      AcousticEnvironment
+        .sharedContext =
+          new AC({
+            latencyHint:
+              "interactive",
+          });
     }
 
     this.context =
-      AcousticEnvironment.shared;
+      AcousticEnvironment
+        .sharedContext;
 
     /**
-     * ========================================================
-     * MASTER GRAPH
-     * ========================================================
+     * Master nodes.
      */
-
-    this.master =
+    this.input =
       this.context.createGain();
 
     this.lowpass =
@@ -213,9 +341,9 @@ export class AcousticEnvironment {
       this.context.createGain();
 
     /**
-     * ========================================================
-     * FILTER
-     * ========================================================
+     * --------------------------------------------------------
+     * Lowpass
+     * --------------------------------------------------------
      */
 
     this.lowpass.type =
@@ -228,15 +356,15 @@ export class AcousticEnvironment {
       0.707;
 
     /**
-     * ========================================================
-     * REVERB
-     * ========================================================
+     * --------------------------------------------------------
+     * Reverb
+     * --------------------------------------------------------
      */
 
     this.reverb.buffer =
       this.generateIR(
-        2.5,
-        2.4
+        2.4,
+        2.2
       );
 
     this.reverbSend.gain.value =
@@ -246,9 +374,9 @@ export class AcousticEnvironment {
       0.22;
 
     /**
-     * ========================================================
-     * LIMITER
-     * ========================================================
+     * --------------------------------------------------------
+     * Limiter
+     * --------------------------------------------------------
      */
 
     this.limiter.threshold.value =
@@ -264,9 +392,9 @@ export class AcousticEnvironment {
       0.25;
 
     /**
-     * ========================================================
-     * MASTER
-     * ========================================================
+     * --------------------------------------------------------
+     * Master
+     * --------------------------------------------------------
      */
 
     this.masterGain.gain.value =
@@ -278,7 +406,7 @@ export class AcousticEnvironment {
      * ========================================================
      */
 
-    this.master.connect(
+    this.input.connect(
       this.lowpass
     );
 
@@ -288,11 +416,11 @@ export class AcousticEnvironment {
 
     /**
      * ========================================================
-     * PARALLEL REVERB SEND
+     * REVERB SEND
      * ========================================================
      */
 
-    this.master.connect(
+    this.input.connect(
       this.reverbSend
     );
 
@@ -324,57 +452,75 @@ export class AcousticEnvironment {
   }
 
   /* ============================================================
-   * Procedural Impulse Response
+   * Procedural IR
    * ========================================================== */
 
-  generateIR(duration, decay) {
+  /**
+   * Procedural stereo impulse response.
+   *
+   * @param {number} duration
+   * @param {number} decay
+   * @returns {AudioBuffer}
+   */
+  generateIR(
+    duration = 2.5,
+    decay = 2
+  ) {
 
-    const sr =
+    const sampleRate =
       this.context.sampleRate;
 
-    const len =
-      Math.floor(sr * duration);
+    const length =
+      sampleRate * duration;
 
-    const ir =
+    const buffer =
       this.context.createBuffer(
         2,
-        len,
-        sr
+        length,
+        sampleRate
       );
 
     for (let ch = 0; ch < 2; ch++) {
 
       const data =
-        ir.getChannelData(ch);
+        buffer.getChannelData(ch);
 
-      for (let i = 0; i < len; i++) {
+      for (
+        let i = 0;
+        i < length;
+        i++
+      ) {
 
-        const t =
-          i / len;
+        const env =
+          Math.pow(
+            1 - (i / length),
+            decay
+          );
 
         data[i] =
           (
             Math.random() * 2 - 1
-          ) *
-          Math.pow(
-            1 - t,
-            decay
-          );
+          ) * env;
       }
     }
 
-    return ir;
+    return buffer;
   }
 
   /* ============================================================
    * Environmental Acoustics
    * ========================================================== */
 
+  /**
+   * Updates enclosure acoustics.
+   */
   updateAcoustics() {
 
+    const state =
+      WorldState.snapshot();
+
     const enclosure =
-      WorldState.snapshot()
-        .listener.enclosure;
+      state.listener.enclosure;
 
     let cutoff = 20000;
 
@@ -401,8 +547,12 @@ export class AcousticEnvironment {
       );
   }
 
+  /**
+   * Playback input bus.
+   * @returns {GainNode}
+   */
   getInputBus() {
-    return this.master;
+    return this.input;
   }
 }
 
@@ -411,37 +561,45 @@ export class AcousticEnvironment {
  * ========================================================== */
 
 /**
- * AAA-grade procedural rain engine.
+ * Procedural stochastic rain synthesizer.
  *
  * ------------------------------------------------------------
- * COMPONENTS
+ * DESIGN
  * ------------------------------------------------------------
  *
- * 1. Atmospheric Rain Bed
- *    - filtered pink-ish noise
+ * Real rain is:
+ * - countless randomized impacts
+ * - spatially scattered
+ * - broadband
+ * - partially diffused into air hiss
  *
- * 2. Stochastic Droplet Particles
- *    - stereo scattered
- *    - low resonance
- *    - varied surface spectra
+ * This synth therefore contains:
+ *
+ * 1. Continuous rain bed
+ *    - filtered noise
+ *    - atmospheric wash
+ *
+ * 2. Stochastic particle droplets
+ *    - individually synthesized
+ *    - randomized pan
+ *    - randomized impact surfaces
+ *    - randomized envelopes
  *
  * ------------------------------------------------------------
- * IMPORTANT FIXES
+ * CRITICAL FIXES
  * ------------------------------------------------------------
  *
- * FIXED:
- * - "peeing into microphone" resonance
- * - mono center collapse
- * - harsh resonant ringing
- *
- * ADDED:
- * - wide stereo field
- * - low-Q droplets
- * - surface diversity
- * - atmospheric wash layer
+ * - no more center-panned impacts
+ * - no more resonant "liquid" tone
+ * - wide broadband spectral spread
+ * - low Q diffuse droplets
+ * - dense rain blends into hiss
  */
 export class ParticleRainSynth {
 
+  /**
+   * @param {AcousticEnvironment} environment
+   */
   constructor(environment) {
 
     this.environment =
@@ -451,90 +609,100 @@ export class ParticleRainSynth {
       environment.context;
 
     /**
-     * ========================================================
-     * OUTPUT
-     * ========================================================
+     * Master output.
      */
-
     this.output =
       this.context.createGain();
 
-    this.output.gain.value = 0;
+    this.output.gain.value =
+      0;
+
+    /**
+     * ========================================================
+     * CONTINUOUS RAIN BED
+     * ========================================================
+     */
+
+    const noiseBuffer =
+      this._createNoiseBuffer();
+
+    this.bedSource =
+      this.context
+        .createBufferSource();
+
+    this.bedSource.buffer =
+      noiseBuffer;
+
+    this.bedSource.loop = true;
+
+    /**
+     * Bed filter.
+     */
+    this.bedFilter =
+      this.context
+        .createBiquadFilter();
+
+    this.bedFilter.type =
+      "lowpass";
+
+    this.bedFilter.frequency.value =
+      1200;
+
+    /**
+     * Bed gain.
+     */
+    this.bedGain =
+      this.context.createGain();
+
+    this.bedGain.gain.value =
+      0;
+
+    /**
+     * Routing.
+     */
+
+    this.bedSource.connect(
+      this.bedFilter
+    );
+
+    this.bedFilter.connect(
+      this.bedGain
+    );
+
+    this.bedGain.connect(
+      this.output
+    );
+
+    /**
+     * --------------------------------------------------------
+     * Master routing.
+     * --------------------------------------------------------
+     */
 
     this.output.connect(
       environment.getInputBus()
     );
 
     /**
-     * ========================================================
-     * STATE
-     * ========================================================
+     * --------------------------------------------------------
+     * Runtime state.
+     * --------------------------------------------------------
      */
 
     this.intensity = 0;
 
     this.running = true;
 
-    this.currentDensityMs =
-      800;
+    this.dropInterval =
+      260;
 
     /**
-     * ========================================================
-     * ATMOSPHERIC RAIN BED
-     * ========================================================
+     * --------------------------------------------------------
+     * Start persistent systems.
+     * --------------------------------------------------------
      */
 
-    this.noiseSource =
-      this.context
-        .createBufferSource();
-
-    this.noiseFilter =
-      this.context
-        .createBiquadFilter();
-
-    this.noiseGain =
-      this.context
-        .createGain();
-
-    this.noiseSource.buffer =
-      this._createNoiseBuffer();
-
-    this.noiseSource.loop =
-      true;
-
-    this.noiseFilter.type =
-      "lowpass";
-
-    this.noiseFilter.frequency.value =
-      700;
-
-    this.noiseFilter.Q.value =
-      0.2;
-
-    this.noiseGain.gain.value =
-      0;
-
-    /**
-     * Routing
-     */
-
-    this.noiseSource.connect(
-      this.noiseFilter
-    );
-
-    this.noiseFilter.connect(
-      this.noiseGain
-    );
-
-    this.noiseGain.connect(
-      this.output
-    );
-
-    this.noiseSource.start();
-
-    /**
-     * Start particle scheduler
-     */
+    this.bedSource.start();
 
     this._loop();
   }
@@ -543,10 +711,15 @@ export class ParticleRainSynth {
    * Noise Generation
    * ========================================================== */
 
+  /**
+   * Creates long-form pink-ish noise.
+   *
+   * @returns {AudioBuffer}
+   */
   _createNoiseBuffer() {
 
     const length =
-      this.context.sampleRate * 5;
+      this.context.sampleRate * 4;
 
     const buffer =
       this.context.createBuffer(
@@ -560,21 +733,23 @@ export class ParticleRainSynth {
 
     let last = 0;
 
-    for (let i = 0; i < length; i++) {
+    for (
+      let i = 0;
+      i < length;
+      i++
+    ) {
 
       const white =
         Math.random() * 2 - 1;
 
       /**
-       * Pink-ish smoothing
+       * Pink-ish smoothing.
        */
-
       last =
         (0.985 * last) +
         (0.015 * white);
 
-      data[i] =
-        last * 0.92;
+      data[i] = last;
     }
 
     return buffer;
@@ -584,55 +759,87 @@ export class ParticleRainSynth {
    * Intensity Morphing
    * ========================================================== */
 
+  /**
+   * Morphs entire rainfall system.
+   *
+   * @param {number} intensity
+   */
   update(intensity) {
 
+    intensity =
+      clamp(
+        intensity,
+        0,
+        1
+      );
+
     this.intensity =
-      clamp(intensity, 0, 1);
+      intensity;
 
     const now =
       this.context.currentTime;
 
     /**
      * ========================================================
-     * ATMOSPHERIC BED
+     * CONTINUOUS BED
      * ========================================================
      */
 
-    const hissGain =
+    /**
+     * Hiss becomes stronger
+     * with heavy rain.
+     */
+
+    const bedGain =
       Math.pow(
-        this.intensity,
-        1.4
-      ) * 0.34;
+        intensity,
+        1.3
+      ) * 0.22;
 
-    const hissCutoff =
-      700 +
-      (this.intensity * 5600);
+    /**
+     * Heavy rain opens spectrum.
+     */
 
-    this.noiseGain.gain
+    const bedCutoff =
+      800 +
+      (intensity * 6800);
+
+    this.bedGain.gain
       .setTargetAtTime(
-        hissGain,
+        bedGain,
         now,
-        0.12
+        0.08
       );
 
-    this.noiseFilter.frequency
+    this.bedFilter.frequency
       .setTargetAtTime(
-        hissCutoff,
+        bedCutoff,
         now,
-        0.12
+        0.08
       );
 
     /**
      * ========================================================
      * DROPLET DENSITY
      * ========================================================
+     *
+     * Lower interval =
+     * denser rain.
      */
 
-    this.currentDensityMs =
-      Math.max(
-        16,
-        850 -
-        (this.intensity * 825)
+    this.dropInterval =
+      220 -
+      (intensity * 205);
+
+    /**
+     * Safety clamp.
+     */
+
+    this.dropInterval =
+      clamp(
+        this.dropInterval,
+        12,
+        240
       );
 
     /**
@@ -641,29 +848,38 @@ export class ParticleRainSynth {
      * ========================================================
      */
 
-    const master =
-      Math.pow(
-        this.intensity,
-        1.15
-      );
+    const outputGain =
+      0.12 +
+      (intensity * 0.72);
 
     this.output.gain
       .setTargetAtTime(
-        master,
+        outputGain,
         now,
         0.08
       );
   }
 
   /* ============================================================
-   * Particle Synthesis
+   * Droplet Synthesis
    * ========================================================== */
 
+  /**
+   * Synthesizes one droplet particle.
+   *
+   * CRITICAL FIXES:
+   * - stereo scatter
+   * - low resonance
+   * - broad spectral diversity
+   * - non-liquid texture
+   */
   _spawnDrop() {
 
-    if (
-      this.intensity <= 0.001
-    ) {
+    /**
+     * No droplets at silence.
+     */
+
+    if (this.intensity <= 0.001) {
       return;
     }
 
@@ -672,34 +888,42 @@ export class ParticleRainSynth {
 
     /**
      * ========================================================
-     * IMPULSE BUFFER
+     * MICRO BURST BUFFER
      * ========================================================
      */
 
     const buffer =
       this.context.createBuffer(
         1,
-        512,
+        256,
         this.context.sampleRate
       );
 
     const data =
       buffer.getChannelData(0);
 
-    for (let i = 0; i < 512; i++) {
+    /**
+     * Tiny broadband impact.
+     */
 
-      const decay =
-        Math.exp(-i / 38);
+    for (
+      let i = 0;
+      i < 256;
+      i++
+    ) {
 
       data[i] =
         (
           Math.random() * 2 - 1
-        ) * decay;
+        ) *
+        Math.exp(
+          -i / random(28, 55)
+        );
     }
 
     /**
      * ========================================================
-     * NODES
+     * SOURCE
      * ========================================================
      */
 
@@ -707,32 +931,34 @@ export class ParticleRainSynth {
       this.context
         .createBufferSource();
 
-    const filter =
-      this.context
-        .createBiquadFilter();
-
-    const pan =
-      this.context
-        .createStereoPanner();
-
-    const gain =
-      this.context
-        .createGain();
-
     src.buffer = buffer;
 
     /**
      * ========================================================
-     * SURFACE VARIATION
+     * FILTER
      * ========================================================
+     *
+     * CRITICAL FIX:
+     * Very low Q.
+     *
+     * Prevents:
+     * - resonant pitch
+     * - liquid whistle
+     * - "peeing into mic"
      */
+
+    const filter =
+      this.context
+        .createBiquadFilter();
 
     filter.type =
       "bandpass";
 
     /**
-     * Wide spectrum:
-     * leaves / roofs / puddles / fabric
+     * Wide impact surfaces:
+     * - low roof thuds
+     * - mid concrete taps
+     * - high leaf clicks
      */
 
     filter.frequency.value =
@@ -742,8 +968,7 @@ export class ParticleRainSynth {
       );
 
     /**
-     * LOW Q
-     * removes liquid resonance
+     * LOW resonance.
      */
 
     filter.Q.value =
@@ -758,30 +983,18 @@ export class ParticleRainSynth {
      * ========================================================
      */
 
-    pan.pan.value =
+    const panner =
+      this.context
+        .createStereoPanner();
+
+    /**
+     * Massive stereo spread.
+     */
+
+    panner.pan.value =
       random(
         -1,
         1
-      );
-
-    /**
-     * ========================================================
-     * GAIN MODEL
-     * ========================================================
-     *
-     * Heavy rain:
-     * softer droplets
-     * blending into hiss bed
-     */
-
-    const dropGain =
-      (
-        0.05 +
-        ((1 - this.intensity) * 0.07)
-      ) *
-      random(
-        0.6,
-        1.2
       );
 
     /**
@@ -790,23 +1003,46 @@ export class ParticleRainSynth {
      * ========================================================
      */
 
+    const gain =
+      this.context
+        .createGain();
+
+    /**
+     * Heavy rain:
+     * individual drops blend more
+     * into atmospheric bed.
+     */
+
+    const dropVolume =
+      lerpDropVolume(
+        this.intensity
+      );
+
+    const attack =
+      random(
+        0.001,
+        0.004
+      );
+
+    const decay =
+      random(
+        0.025,
+        0.11
+      );
+
     gain.gain.setValueAtTime(
-      0,
+      0.0001,
       now
     );
 
     gain.gain.linearRampToValueAtTime(
-      dropGain,
-      now + 0.002
+      dropVolume,
+      now + attack
     );
 
     gain.gain.exponentialRampToValueAtTime(
       0.0001,
-      now +
-      random(
-        0.025,
-        0.09
-      )
+      now + decay
     );
 
     /**
@@ -817,9 +1053,9 @@ export class ParticleRainSynth {
 
     src.connect(filter);
 
-    filter.connect(pan);
+    filter.connect(panner);
 
-    pan.connect(gain);
+    panner.connect(gain);
 
     gain.connect(
       this.output
@@ -833,7 +1069,9 @@ export class ParticleRainSynth {
 
     src.start(now);
 
-    src.stop(now + 0.18);
+    src.stop(
+      now + decay + 0.04
+    );
 
     /**
      * ========================================================
@@ -845,15 +1083,18 @@ export class ParticleRainSynth {
 
       safeDisconnect(src);
       safeDisconnect(filter);
-      safeDisconnect(pan);
+      safeDisconnect(panner);
       safeDisconnect(gain);
     };
   }
 
   /* ============================================================
-   * Particle Scheduler
+   * Scheduler Loop
    * ========================================================== */
 
+  /**
+   * Stochastic droplet scheduler.
+   */
   _loop() {
 
     if (!this.running) {
@@ -861,17 +1102,14 @@ export class ParticleRainSynth {
     }
 
     /**
-     * Heavy rain:
-     * multiple simultaneous impacts
+     * Multiple droplets for
+     * intense rain.
      */
 
     const burstCount =
-      Math.max(
-        1,
-        Math.floor(
-          1 +
-          (this.intensity * 4)
-        )
+      Math.floor(
+        1 +
+        (this.intensity * 4)
       );
 
     for (
@@ -881,40 +1119,41 @@ export class ParticleRainSynth {
     ) {
 
       /**
-       * Temporal jitter
-       * avoids robotic timing
+       * Random sparse gaps.
        */
 
-      setTimeout(
-        () => this._spawnDrop(),
-        Math.random() * 12
-      );
+      if (
+        Math.random() <
+        (0.25 + this.intensity)
+      ) {
+
+        this._spawnDrop();
+      }
     }
 
     setTimeout(
       () => this._loop(),
-      this.currentDensityMs
+      this.dropInterval
     );
   }
 
-  /* ============================================================
-   * Cleanup
-   * ========================================================== */
-
+  /**
+   * Stops synth safely.
+   */
   destroy() {
 
     this.running = false;
 
     safeDisconnect(
-      this.noiseSource
+      this.bedSource
     );
 
     safeDisconnect(
-      this.noiseFilter
+      this.bedFilter
     );
 
     safeDisconnect(
-      this.noiseGain
+      this.bedGain
     );
 
     safeDisconnect(
@@ -924,12 +1163,46 @@ export class ParticleRainSynth {
 }
 
 /* ============================================================
+ * Internal Volume Curve
+ * ========================================================== */
+
+/**
+ * Heavy rain:
+ * individual impacts soften
+ * into diffuse hiss field.
+ *
+ * @param {number} intensity
+ * @returns {number}
+ */
+function lerpDropVolume(
+  intensity
+) {
+
+  return (
+    0.055 -
+    (intensity * 0.028)
+  );
+}
+
+/* ============================================================
  * EcologicalAudioBehavior
  * ========================================================== */
 
+/**
+ * Atomic ecological playback.
+ *
+ * Features:
+ * - JIT ecological gating
+ * - randomized pan
+ * - randomized pitch
+ * - cleanup-safe one-shots
+ */
 export class EcologicalAudioBehavior
   extends AtomicBehavior {
 
+  /**
+   * @param {object} config
+   */
   constructor(config = {}) {
 
     super(config);
@@ -947,10 +1220,21 @@ export class EcologicalAudioBehavior
       config.baseVolume || 0.3;
   }
 
+  /* ============================================================
+   * Playback
+   * ========================================================== */
+
+  /**
+   * Executes ecological event.
+   *
+   * @param {object} context
+   */
   async onExecute(context) {
 
     /**
+     * ========================================================
      * SECONDARY JIT GATE
+     * ========================================================
      */
 
     const rules =
@@ -960,6 +1244,10 @@ export class EcologicalAudioBehavior
           WorldState.snapshot()
         );
 
+    /**
+     * Abort stale events instantly.
+     */
+
     if (
       rules
         .probabilityMultiplier <= 0
@@ -967,88 +1255,136 @@ export class EcologicalAudioBehavior
       return;
     }
 
-    const url =
-      this.sampleUrls[
-        Math.floor(
-          Math.random() *
-          this.sampleUrls.length
-        )
-      ];
+    try {
 
-    const buffer =
-      await this.sampleBank.get(url);
+      /**
+       * ------------------------------------------------------
+       * Sample selection.
+       * ----------------------------------------------------
+       */
 
-    const src =
-      this.environment.context
-        .createBufferSource();
+      const url =
+        randomChoice(
+          this.sampleUrls
+        );
 
-    const pan =
-      this.environment.context
-        .createStereoPanner();
+      /**
+       * ------------------------------------------------------
+       * Retrieve decoded buffer.
+       * ----------------------------------------------------
+       */
 
-    const gain =
-      this.environment.context
-        .createGain();
+      const buffer =
+        await this.sampleBank
+          .get(url);
 
-    src.buffer =
-      buffer;
+      /**
+       * ------------------------------------------------------
+       * One-shot nodes.
+       * ----------------------------------------------------
+       */
 
-    /**
-     * Pitch variance
-     */
+      const src =
+        this.environment
+          .context
+          .createBufferSource();
 
-    src.playbackRate.value =
-      random(
-        0.92,
-        1.08
+      const pan =
+        this.environment
+          .context
+          .createStereoPanner();
+
+      const gain =
+        this.environment
+          .context
+          .createGain();
+
+      /**
+       * ------------------------------------------------------
+       * Source config.
+       * ----------------------------------------------------
+       */
+
+      src.buffer =
+        buffer;
+
+      src.playbackRate.value =
+        random(
+          0.92,
+          1.08
+        );
+
+      /**
+       * ------------------------------------------------------
+       * Spatial spread.
+       * ----------------------------------------------------
+       */
+
+      pan.pan.value =
+        random(
+          -1,
+          1
+        );
+
+      /**
+       * ------------------------------------------------------
+       * Final gain.
+       * ----------------------------------------------------
+       */
+
+      gain.gain.value =
+        clamp(
+          this.baseVolume *
+          (
+            rules
+              .activityMultiplier ?? 1
+          ),
+          0,
+          2
+        );
+
+      /**
+       * ------------------------------------------------------
+       * Routing.
+       * ----------------------------------------------------
+       */
+
+      src.connect(pan);
+
+      pan.connect(gain);
+
+      gain.connect(
+        this.environment
+          .getInputBus()
       );
 
-    /**
-     * Spatialization
-     */
+      /**
+       * ------------------------------------------------------
+       * Cleanup.
+       * ----------------------------------------------------
+       */
 
-    pan.pan.value =
-      random(
-        -1,
-        1
+      src.onended = () => {
+
+        safeDisconnect(src);
+        safeDisconnect(pan);
+        safeDisconnect(gain);
+      };
+
+      /**
+       * ------------------------------------------------------
+       * Playback.
+       * ----------------------------------------------------
+       */
+
+      src.start();
+
+    } catch (err) {
+
+      console.warn(
+        "[EcologicalAudioBehavior] Playback failed:",
+        err
       );
-
-    /**
-     * Ecological activity scaling
-     */
-
-    gain.gain.value =
-      this.baseVolume *
-      rules.activityMultiplier;
-
-    /**
-     * Routing
-     */
-
-    src.connect(pan);
-
-    pan.connect(gain);
-
-    gain.connect(
-      this.environment
-        .getInputBus()
-    );
-
-    /**
-     * Playback
-     */
-
-    src.start();
-
-    /**
-     * Cleanup
-     */
-
-    src.onended = () => {
-
-      safeDisconnect(src);
-      safeDisconnect(pan);
-      safeDisconnect(gain);
-    };
+    }
   }
 }
