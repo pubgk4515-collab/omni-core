@@ -228,6 +228,51 @@ export class AcousticEnvironment {
  * ParticleRainSynth
  * ========================================================== */
 
+/**
+ * AAA-grade procedural rain synthesizer.
+ *
+ * ------------------------------------------------------------
+ * DESIGN GOALS
+ * ------------------------------------------------------------
+ *
+ * OLD PROBLEM:
+ * - center-panned droplets
+ * - ultra-resonant filters
+ * - "liquid peeing into mic" artifact
+ *
+ * NEW MODEL:
+ * - wide stereo scatter
+ * - broad low-Q impacts
+ * - layered atmospheric hiss bed
+ * - stochastic surface diversity
+ * - intensity-dependent density morphing
+ *
+ * ------------------------------------------------------------
+ * ARCHITECTURE
+ * ------------------------------------------------------------
+ *
+ * Layer A:
+ * Continuous atmospheric rain bed
+ * (filtered noise)
+ *
+ * Layer B:
+ * Procedural transient droplets
+ * (one-shot particles)
+ *
+ * ------------------------------------------------------------
+ * INTENSITY MODEL
+ * ------------------------------------------------------------
+ *
+ * Low intensity:
+ * - sparse droplets
+ * - almost no hiss
+ * - isolated impacts
+ *
+ * High intensity:
+ * - dense atmospheric wash
+ * - softer individual particles
+ * - broad-spectrum storm texture
+ */
 export class ParticleRainSynth {
 
   constructor(environment) {
@@ -238,6 +283,9 @@ export class ParticleRainSynth {
     this.context =
       environment.context;
 
+    /**
+     * Master output.
+     */
     this.output =
       this.context.createGain();
 
@@ -247,82 +295,378 @@ export class ParticleRainSynth {
       environment.getInputBus()
     );
 
+    /**
+     * Runtime state.
+     */
     this.intensity = 0;
-
     this.running = true;
+
+    /**
+     * Dynamic density state.
+     */
+    this.currentDensityMs = 800;
+
+    /**
+     * ========================================================
+     * CONTINUOUS RAIN BED
+     * ========================================================
+     *
+     * This is the atmospheric glue.
+     * Without this, rain sounds fake.
+     */
+
+    this.noiseSource =
+      this.context.createBufferSource();
+
+    this.noiseFilter =
+      this.context.createBiquadFilter();
+
+    this.noiseGain =
+      this.context.createGain();
+
+    /**
+     * Create long noise buffer.
+     */
+    this.noiseSource.buffer =
+      this._createNoiseBuffer();
+
+    this.noiseSource.loop = true;
+
+    /**
+     * Lowpass:
+     * opens up as rain intensifies.
+     */
+
+    this.noiseFilter.type =
+      "lowpass";
+
+    this.noiseFilter.frequency.value =
+      700;
+
+    this.noiseFilter.Q.value =
+      0.2;
+
+    /**
+     * Quiet atmospheric bed.
+     */
+
+    this.noiseGain.gain.value =
+      0;
+
+    /**
+     * Routing.
+     */
+
+    this.noiseSource.connect(
+      this.noiseFilter
+    );
+
+    this.noiseFilter.connect(
+      this.noiseGain
+    );
+
+    this.noiseGain.connect(
+      this.output
+    );
+
+    /**
+     * Start persistent bed.
+     */
+
+    this.noiseSource.start();
+
+    /**
+     * Start droplet engine.
+     */
 
     this._loop();
   }
 
-  update(intensity) {
+  /* ============================================================
+   * Noise Buffer
+   * ========================================================== */
 
-    this.intensity =
-      intensity;
+  /**
+   * Creates soft pink-ish noise.
+   *
+   * IMPORTANT:
+   * Smooth spectrum avoids harsh static.
+   */
+  _createNoiseBuffer() {
 
-    this.output.gain
-      .setTargetAtTime(
-        intensity,
-        this.context.currentTime,
-        0.08
-      );
-  }
-
-  _spawnDrop() {
-
-    const now =
-      this.context.currentTime;
-
-    /**
-     * Tiny noise burst.
-     */
+    const length =
+      this.context.sampleRate * 5;
 
     const buffer =
       this.context.createBuffer(
         1,
-        256,
+        length,
         this.context.sampleRate
       );
 
     const data =
       buffer.getChannelData(0);
 
-    for (let i = 0; i < 256; i++) {
+    let last = 0;
+
+    for (let i = 0; i < length; i++) {
+
+      const white =
+        Math.random() * 2 - 1;
+
+      /**
+       * Pink-ish smoothing.
+       */
+
+      last =
+        (0.985 * last) +
+        (0.015 * white);
+
       data[i] =
-        (Math.random() * 2 - 1) *
-        Math.exp(-i / 40);
+        last * 0.9;
     }
+
+    return buffer;
+  }
+
+  /* ============================================================
+   * Intensity Morphing
+   * ========================================================== */
+
+  /**
+   * Real-time rain morphing.
+   *
+   * @param {number} intensity
+   */
+  update(intensity) {
+
+    this.intensity =
+      Math.max(
+        0,
+        Math.min(1, intensity)
+      );
+
+    const now =
+      this.context.currentTime;
+
+    /**
+     * ========================================================
+     * BACKGROUND HISS BED
+     * ========================================================
+     */
+
+    /**
+     * Louder atmospheric wash.
+     */
+
+    const hissGain =
+      Math.pow(
+        this.intensity,
+        1.4
+      ) * 0.32;
+
+    /**
+     * More intense rain =
+     * brighter spectrum.
+     */
+
+    const hissCutoff =
+      700 +
+      (this.intensity * 5500);
+
+    this.noiseGain.gain
+      .setTargetAtTime(
+        hissGain,
+        now,
+        0.12
+      );
+
+    this.noiseFilter.frequency
+      .setTargetAtTime(
+        hissCutoff,
+        now,
+        0.12
+      );
+
+    /**
+     * ========================================================
+     * DROPLET DENSITY
+     * ========================================================
+     *
+     * Heavy rain:
+     * rapid transient spawning.
+     */
+
+    this.currentDensityMs =
+      Math.max(
+        18,
+        850 -
+        (this.intensity * 820)
+      );
+  }
+
+  /* ============================================================
+   * Droplet Synthesis
+   * ========================================================== */
+
+  /**
+   * Generates one stochastic droplet.
+   *
+   * ------------------------------------------------------------
+   * FIXES:
+   * ------------------------------------------------------------
+ *
+ * - stereo scatter
+ * - broad low-Q filtering
+ * - softer resonances
+ * - multi-surface simulation
+ */
+  _spawnDrop() {
+
+    /**
+     * Skip near-silent state.
+     */
+
+    if (
+      this.intensity <= 0.001
+    ) {
+      return;
+    }
+
+    const now =
+      this.context.currentTime;
+
+    /**
+     * ========================================================
+     * NOISE IMPULSE
+     * ========================================================
+     */
+
+    const buffer =
+      this.context.createBuffer(
+        1,
+        512,
+        this.context.sampleRate
+      );
+
+    const data =
+      buffer.getChannelData(0);
+
+    /**
+     * Short filtered burst.
+     */
+
+    for (let i = 0; i < 512; i++) {
+
+      /**
+       * Fast exponential decay.
+       */
+
+      const decay =
+        Math.exp(-i / 38);
+
+      data[i] =
+        (
+          Math.random() * 2 - 1
+        ) * decay;
+    }
+
+    /**
+     * ========================================================
+     * NODES
+     * ========================================================
+     */
 
     const src =
       this.context
         .createBufferSource();
 
-    src.buffer = buffer;
-
     const filter =
       this.context
         .createBiquadFilter();
 
-    filter.type =
-      "bandpass";
-
-    filter.frequency.value =
-      random(
-        900,
-        4500
-      );
-
-    filter.Q.value =
-      random(
-        2,
-        12
-      );
+    const pan =
+      this.context
+        .createStereoPanner();
 
     const gain =
       this.context
         .createGain();
 
+    src.buffer = buffer;
+
     /**
-     * Real droplet envelope.
+     * ========================================================
+     * SURFACE VARIATION
+     * ========================================================
+     *
+     * Different droplets hit:
+     * - leaves
+     * - concrete
+     * - puddles
+     * - fabric
+     * - distant surfaces
+     */
+
+    filter.type =
+      "bandpass";
+
+    /**
+     * MUCH wider range.
+     */
+
+    filter.frequency.value =
+      random(
+        300,
+        6000
+      );
+
+    /**
+     * CRITICAL FIX:
+     * Lower resonance.
+     */
+
+    filter.Q.value =
+      random(
+        0.1,
+        1.5
+      );
+
+    /**
+     * ========================================================
+     * STEREO SCATTER
+     * ========================================================
+     */
+
+    pan.pan.value =
+      random(
+        -1,
+        1
+      );
+
+    /**
+     * ========================================================
+     * INTENSITY-DEPENDENT GAIN
+     * ========================================================
+     *
+     * Heavy storms:
+     * droplets soften into wash.
+     */
+
+    const dropGain =
+      (
+        0.05 +
+        (1 - this.intensity) * 0.07
+      ) *
+      random(
+        0.6,
+        1.2
+      );
+
+    /**
+     * ========================================================
+     * ENVELOPE
+     * ========================================================
      */
 
     gain.gain.setValueAtTime(
@@ -330,31 +674,72 @@ export class ParticleRainSynth {
       now
     );
 
+    /**
+     * Fast attack.
+     */
+
     gain.gain.linearRampToValueAtTime(
-      random(0.04, 0.12),
+      dropGain,
       now + 0.002
     );
 
+    /**
+     * Natural decay.
+     */
+
     gain.gain.exponentialRampToValueAtTime(
       0.0001,
-      now + random(0.03, 0.12)
+      now +
+      random(
+        0.025,
+        0.09
+      )
     );
 
+    /**
+     * ========================================================
+     * ROUTING
+     * ========================================================
+     */
+
     src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.output);
+
+    filter.connect(pan);
+
+    pan.connect(gain);
+
+    gain.connect(
+      this.output
+    );
+
+    /**
+     * ========================================================
+     * PLAYBACK
+     * ========================================================
+     */
 
     src.start(now);
 
-    src.stop(now + 0.2);
+    src.stop(now + 0.18);
+
+    /**
+     * ========================================================
+     * CLEANUP
+     * ========================================================
+     */
 
     src.onended = () => {
 
       safeDisconnect(src);
       safeDisconnect(filter);
+      safeDisconnect(pan);
       safeDisconnect(gain);
     };
   }
+
+  /* ============================================================
+   * Particle Scheduler
+   * ========================================================== */
 
   _loop() {
 
@@ -363,26 +748,75 @@ export class ParticleRainSynth {
     }
 
     /**
-     * Higher intensity =
-     * faster droplet density.
+     * --------------------------------------------------------
+     * Spawn count scales with intensity.
+     * --------------------------------------------------------
+     *
+     * Heavy rain:
+     * multiple simultaneous impacts.
      */
 
-    const density =
+    const burstCount =
       Math.max(
-        40,
-        1000 -
-        (this.intensity * 940)
+        1,
+        Math.floor(
+          1 +
+          (this.intensity * 4)
+        )
       );
 
-    this._spawnDrop();
+    for (
+      let i = 0;
+      i < burstCount;
+      i++
+    ) {
+
+      /**
+       * Tiny temporal jitter
+       * prevents robotic timing.
+       */
+
+      setTimeout(
+        () => this._spawnDrop(),
+        Math.random() * 12
+      );
+    }
+
+    /**
+     * Recursive stochastic scheduling.
+     */
 
     setTimeout(
       () => this._loop(),
-      density
+      this.currentDensityMs
+    );
+  }
+
+  /* ============================================================
+   * Cleanup
+   * ========================================================== */
+
+  destroy() {
+
+    this.running = false;
+
+    safeDisconnect(
+      this.noiseSource
+    );
+
+    safeDisconnect(
+      this.noiseFilter
+    );
+
+    safeDisconnect(
+      this.noiseGain
+    );
+
+    safeDisconnect(
+      this.output
     );
   }
 }
-
 /* ============================================================
  * EcologicalAudioBehavior
  * ========================================================== */
