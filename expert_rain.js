@@ -1,17 +1,29 @@
 /**
  * expert_rain.js
- * Symbiote Engine
  * Compact MoE Acoustic World Model
  *
  * ------------------------------------------------------------
  * RAIN EXPERT
  * ------------------------------------------------------------
  *
- * This module represents:
+ * Specialized procedural rainfall module.
  *
- * - a dynamically injectable MoE expert
+ * This expert is:
+ * - self-contained
+ * - runtime injectable
+ * - state reactive
+ * - MoE-compatible
+ *
+ * ------------------------------------------------------------
+ * RESPONSIBILITIES
+ * ------------------------------------------------------------
+ *
  * - procedural droplet synthesis
- * - stochastic rainfall particle generation
+ * - stochastic rainfall timing
+ * - stereo spatial scatter
+ * - low-Q non-resonant impacts
+ * - UI card generation
+ * - WorldState responsiveness
  *
  * ------------------------------------------------------------
  * IMPORTANT
@@ -19,25 +31,9 @@
  *
  * NO background hiss.
  *
- * ONLY:
- * - distinct impact particles
- * - randomized stereo placement
- * - randomized impact frequencies
- *
- * ------------------------------------------------------------
- * DESIGN GOALS
- * ------------------------------------------------------------
- *
- * Avoid:
- * - resonant liquid tone
- * - "peeing into microphone"
- * - center-panned fatigue
- *
- * Achieved via:
- * - low-Q filters
- * - wide stereo scatter
- * - broadband impacts
- * - randomized envelopes
+ * Only:
+ * - distinct micro impacts
+ * - scattered acoustic particles
  */
 
 /* ============================================================
@@ -60,7 +56,7 @@ function random(min, max) {
 }
 
 /**
- * Clamp helper.
+ * Clamp value.
  *
  * @param {number} value
  * @param {number} min
@@ -80,7 +76,7 @@ function clamp(
 }
 
 /**
- * Safe disconnect.
+ * Safe disconnect helper.
  *
  * @param {AudioNode} node
  */
@@ -103,88 +99,78 @@ export default class RainExpert {
 
   /**
    * @param {AudioContext} audioContext
-   * @param {AudioNode} masterDestination
+   * @param {AudioNode} masterInputBus
    */
   constructor(
     audioContext,
-    masterDestination
+    masterInputBus
   ) {
 
-    if (!audioContext) {
-
-      throw new Error(
-        "[RainExpert] Missing AudioContext."
-      );
-    }
-
-    if (!masterDestination) {
-
-      throw new Error(
-        "[RainExpert] Missing destination."
-      );
-    }
-
     /**
-     * Stable runtime ID.
+     * Runtime identity.
      */
+
     this.id =
       crypto.randomUUID();
 
     /**
-     * Expert name.
+     * DSP references.
      */
-    this.name =
-      "Rain Expert";
 
-    /**
-     * Audio routing.
-     */
     this.context =
       audioContext;
 
-    this.destination =
-      masterDestination;
+    this.masterInputBus =
+      masterInputBus;
 
     /**
      * Runtime state.
      */
-    this.running =
-      true;
+
+    this.running = true;
 
     /**
-     * Global atmospheric intensity.
+     * 0.0 → calm
+     * 1.0 → storm
      */
-    this.pressure =
-      0;
+
+    this.pressure = 0;
 
     /**
-     * Local density multiplier.
+     * Additional UI density multiplier.
      */
-    this.localDensity =
-      1;
+
+    this.userDensity = 1;
 
     /**
-     * Internal timing.
+     * Scheduler interval.
      */
-    this.spawnInterval =
-      180;
+
+    this.dropInterval =
+      240;
 
     /**
-     * Output bus.
+     * Master expert output.
      */
+
     this.output =
       this.context.createGain();
 
     this.output.gain.value =
-      0.75;
+      0.55;
+
+    /**
+     * Route into global bus.
+     */
 
     this.output.connect(
-      this.destination
+      this.masterInputBus
     );
 
     /**
-     * Begin stochastic scheduler.
+     * Begin stochastic loop.
      */
+
     this._loop();
   }
 
@@ -193,7 +179,7 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Receives global world state.
+   * Receives state from MoERouter.
    *
    * @param {object} worldState
    */
@@ -202,86 +188,147 @@ export default class RainExpert {
   ) {
 
     /**
-     * Global atmospheric pressure.
+     * Atmospheric pressure drives:
+     * - density
+     * - energy
+     * - burst count
      */
 
-    const pressure =
+    this.pressure =
       clamp(
         worldState
-          ?.atmosphericPressure ?? 0,
+          .atmosphericPressure,
         0,
         1
       );
 
-    this.pressure =
-      pressure;
-
     /**
-     * Density morphing.
-     *
-     * Heavy pressure:
-     * faster droplet activity.
+     * Dense storms:
+     * faster droplets.
      */
 
-    this.spawnInterval =
-      240 -
+    const targetInterval =
+      260 -
       (
-        pressure *
-        220 *
-        this.localDensity
+        this.pressure *
+        230 *
+        this.userDensity
       );
 
-    /**
-     * Safety clamp.
-     */
-
-    this.spawnInterval =
+    this.dropInterval =
       clamp(
-        this.spawnInterval,
-        12,
+        targetInterval,
+        14,
         260
       );
   }
 
   /* ============================================================
-   * Local Parameters
+   * UI Card
    * ========================================================== */
 
   /**
-   * Expert-local controls.
+   * Returns expert-specific UI.
    *
-   * @param {string} param
-   * @param {number} value
+   * @returns {string}
    */
-  setLocalParameter(
-    param,
-    value
-  ) {
+  getUICard() {
 
-    switch (param) {
+    return `
+      <article
+        class="expert-card glass"
+        data-expert-id="${this.id}"
+      >
 
-      case "density":
+        <div class="expert-top">
 
-        this.localDensity =
-          clamp(
-            value,
-            0.1,
-            2
-          );
+          <div>
 
-        break;
+            <div class="expert-name">
+              Rain Expert
+            </div>
 
-      case "volume":
+            <div class="expert-type">
+              Procedural Atmosphere Module
+            </div>
 
-        this.output.gain
-          .setTargetAtTime(
-            clamp(value, 0, 1),
-            this.context.currentTime,
-            0.08
-          );
+          </div>
 
-        break;
+          <div class="badge">
+            Active
+          </div>
+
+        </div>
+
+        <div class="control">
+
+          <div class="control-top">
+
+            <div class="label">
+              Droplet Density
+            </div>
+
+            <div
+              class="value density-value"
+            >
+              1.00
+            </div>
+
+          </div>
+
+          <input
+            type="range"
+            min="0.2"
+            max="2"
+            step="0.01"
+            value="1"
+            class="density-slider"
+          />
+
+        </div>
+
+      </article>
+    `;
+  }
+
+  /* ============================================================
+   * UI Wiring
+   * ========================================================== */
+
+  /**
+   * Binds card controls.
+   *
+   * @param {HTMLElement} element
+   */
+  bindUI(element) {
+
+    const slider =
+      element.querySelector(
+        ".density-slider"
+      );
+
+    const value =
+      element.querySelector(
+        ".density-value"
+      );
+
+    if (!slider) {
+      return;
     }
+
+    slider.addEventListener(
+      "input",
+      () => {
+
+        const v =
+          Number(slider.value);
+
+        this.userDensity = v;
+
+        value.textContent =
+          v.toFixed(2);
+      }
+    );
   }
 
   /* ============================================================
@@ -289,16 +336,21 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Synthesizes one stochastic rain impact.
+   * Spawns one procedural droplet.
+   *
+   * IMPORTANT:
+   * - random stereo pan
+   * - LOW Q
+   * - broad spectrum
+   *
+   * Prevents:
+   * - resonant peeing sound
+   * - tonal ringing
    */
   _spawnDrop() {
 
-    /**
-     * Silent if pressure too low.
-     */
-
     if (
-      this.pressure <= 0.01
+      this.pressure <= 0.001
     ) {
       return;
     }
@@ -308,7 +360,7 @@ export default class RainExpert {
 
     /**
      * ========================================================
-     * Burst Buffer
+     * Tiny stochastic burst
      * ========================================================
      */
 
@@ -322,10 +374,6 @@ export default class RainExpert {
     const data =
       buffer.getChannelData(0);
 
-    /**
-     * Short broadband impact.
-     */
-
     for (
       let i = 0;
       i < 256;
@@ -338,7 +386,7 @@ export default class RainExpert {
         ) *
         Math.exp(
           -i /
-          random(24, 48)
+          random(20, 55)
         );
     }
 
@@ -348,21 +396,17 @@ export default class RainExpert {
      * ========================================================
      */
 
-    const source =
+    const src =
       this.context
         .createBufferSource();
 
-    source.buffer =
+    src.buffer =
       buffer;
 
     /**
      * ========================================================
      * Filter
      * ========================================================
-     *
-     * LOW Q prevents:
-     * - liquid whistle
-     * - resonant peeing sound
      */
 
     const filter =
@@ -373,10 +417,7 @@ export default class RainExpert {
       "bandpass";
 
     /**
-     * Surface diversity:
-     * - low roof thuds
-     * - mid concrete taps
-     * - high leaf clicks
+     * Wide material spectrum.
      */
 
     filter.frequency.value =
@@ -386,7 +427,8 @@ export default class RainExpert {
       );
 
     /**
-     * VERY LOW Q.
+     * CRITICAL:
+     * LOW resonance.
      */
 
     filter.Q.value =
@@ -406,10 +448,7 @@ export default class RainExpert {
         .createStereoPanner();
 
     panner.pan.value =
-      random(
-        -1,
-        1
-      );
+      random(-1, 1);
 
     /**
      * ========================================================
@@ -422,15 +461,15 @@ export default class RainExpert {
         .createGain();
 
     /**
-     * Heavy rain:
-     * softer impacts
-     * more blended field.
+     * Heavy storms:
+     * individual drops soften.
      */
 
-    const volume =
-      0.04 -
+    const amp =
+      0.08 -
       (
-        this.pressure * 0.018
+        this.pressure *
+        0.04
       );
 
     const attack =
@@ -441,7 +480,7 @@ export default class RainExpert {
 
     const decay =
       random(
-        0.025,
+        0.02,
         0.09
       );
 
@@ -451,7 +490,7 @@ export default class RainExpert {
     );
 
     gain.gain.linearRampToValueAtTime(
-      volume,
+      amp,
       now + attack
     );
 
@@ -466,17 +505,11 @@ export default class RainExpert {
      * ========================================================
      */
 
-    source.connect(
-      filter
-    );
+    src.connect(filter);
 
-    filter.connect(
-      panner
-    );
+    filter.connect(panner);
 
-    panner.connect(
-      gain
-    );
+    panner.connect(gain);
 
     gain.connect(
       this.output
@@ -488,10 +521,10 @@ export default class RainExpert {
      * ========================================================
      */
 
-    source.start(now);
+    src.start(now);
 
-    source.stop(
-      now + decay + 0.04
+    src.stop(
+      now + decay + 0.03
     );
 
     /**
@@ -500,9 +533,9 @@ export default class RainExpert {
      * ========================================================
      */
 
-    source.onended = () => {
+    src.onended = () => {
 
-      safeDisconnect(source);
+      safeDisconnect(src);
       safeDisconnect(filter);
       safeDisconnect(panner);
       safeDisconnect(gain);
@@ -514,7 +547,7 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Stochastic scheduling loop.
+   * Stochastic droplet loop.
    */
   _loop() {
 
@@ -523,8 +556,8 @@ export default class RainExpert {
     }
 
     /**
-     * Burst count rises
-     * with pressure.
+     * Burst count scales
+     * with storm intensity.
      */
 
     const burstCount =
@@ -541,14 +574,10 @@ export default class RainExpert {
       i++
     ) {
 
-      /**
-       * Sparse stochastic gaps.
-       */
-
       if (
         Math.random() <
         (
-          0.25 +
+          0.22 +
           this.pressure
         )
       ) {
@@ -559,7 +588,7 @@ export default class RainExpert {
 
     setTimeout(
       () => this._loop(),
-      this.spawnInterval
+      this.dropInterval
     );
   }
 
@@ -567,13 +596,9 @@ export default class RainExpert {
    * Lifecycle
    * ========================================================== */
 
-  /**
-   * Expert teardown.
-   */
   destroy() {
 
-    this.running =
-      false;
+    this.running = false;
 
     safeDisconnect(
       this.output
