@@ -1,48 +1,30 @@
 /**
  * app.js
- * Symbiote Engine
- * Main Integration Layer
+ * Compact MoE Acoustic World Model
  *
  * ------------------------------------------------------------
  * RESPONSIBILITIES
  * ------------------------------------------------------------
  *
- * - Engine bootstrap
- * - Dynamic runtime injection
- * - UI ↔ WorldState synchronization
- * - Expert registration
- * - MoE Router orchestration
- *
- * ------------------------------------------------------------
- * CRITICAL FEATURE
- * ------------------------------------------------------------
- *
- * Dynamic Runtime Injection:
- *
- * User pastes ES6 module code
- * ↓
- * Blob created
- * ↓
- * Runtime import()
- * ↓
- * Expert instantiated
- * ↓
- * Expert registered
- * ↓
- * UI card appended
+ * - UI ↔ Engine bridge
+ * - Runtime expert injection
+ * - Dynamic module loading
+ * - Global state propagation
+ * - Safe engine initialization
  *
  * ------------------------------------------------------------
  * IMPORTANT
  * ------------------------------------------------------------
  *
- * Audio engine safely initializes
- * on FIRST user interaction.
- *
- * Prevents:
- * - null context
- * - suspended mobile audio
- * - race conditions
+ * Audio initialization is:
+ * - lazy
+ * - user-gesture safe
+ * - race-condition protected
  */
+
+/* ============================================================
+ * Imports
+ * ========================================================== */
 
 import {
   WorldState,
@@ -58,19 +40,9 @@ import {
  * DOM
  * ========================================================== */
 
-const enclosureSelect =
-  document.querySelector(
-    "select"
-  );
-
-const pressureSlider =
+const layerContainer =
   document.getElementById(
-    "pressureSlider"
-  );
-
-const pressureValue =
-  document.getElementById(
-    "pressureValue"
+    "layerContainer"
   );
 
 const addExpertBtn =
@@ -83,27 +55,35 @@ const sheetOverlay =
     "sheetOverlay"
   );
 
-const layersContainer =
+const pressureSlider =
+  document.getElementById(
+    "pressureSlider"
+  );
+
+const pressureValue =
+  document.getElementById(
+    "pressureValue"
+  );
+
+const enclosureSelect =
   document.querySelector(
-    ".rack"
+    "select"
   );
 
 /* ============================================================
  * Runtime
  * ========================================================== */
 
-let bus = null;
+let acousticBus = null;
 
 let router = null;
 
-let initialized =
-  false;
+let initialized = false;
 
-let initializing =
-  false;
+let initializing = false;
 
 /**
- * Active experts.
+ * Active expert instances.
  */
 const experts = [];
 
@@ -112,12 +92,12 @@ const experts = [];
  * ========================================================== */
 
 /**
- * Safe bootstrap.
+ * Safe async initialization.
  *
- * Triggered by:
- * - sliders
- * - add expert
- * - any user gesture
+ * Prevents:
+ * - null context race
+ * - duplicate AudioContexts
+ * - mobile autoplay issues
  */
 async function initEngine() {
 
@@ -127,17 +107,14 @@ async function initEngine() {
 
   if (initialized) {
 
-    /**
-     * Mobile browsers
-     * may suspend context.
-     */
-
     if (
-      bus?.context?.state ===
+      acousticBus?.context
+        ?.state ===
       "suspended"
     ) {
 
-      await bus.context
+      await acousticBus
+        .context
         .resume();
     }
 
@@ -145,12 +122,24 @@ async function initEngine() {
   }
 
   /**
-   * Prevent parallel init.
+   * Parallel init guard.
    */
 
   if (initializing) {
 
-    await waitForInit();
+    while (
+      initializing &&
+      !initialized
+    ) {
+
+      await new Promise(
+        (resolve) =>
+          setTimeout(
+            resolve,
+            16
+          )
+      );
+    }
 
     return;
   }
@@ -165,14 +154,14 @@ async function initEngine() {
      * ========================================================
      */
 
-    bus =
+    acousticBus =
       new MasterAcousticBus();
 
-    await bus.init();
+    await acousticBus.init();
 
     /**
      * ========================================================
-     * Router
+     * MoE Router
      * ========================================================
      */
 
@@ -181,24 +170,20 @@ async function initEngine() {
 
     /**
      * ========================================================
-     * Initial State Broadcast
+     * Runtime
      * ========================================================
      */
-
-    router.broadcastState(
-      WorldState.snapshot()
-    );
 
     initialized = true;
 
     console.log(
-      "[App] Symbiote Engine initialized."
+      "[Engine] Initialized."
     );
 
   } catch (err) {
 
     console.error(
-      "[App] Engine init failed:",
+      "[Engine] Init failed:",
       err
     );
 
@@ -209,431 +194,512 @@ async function initEngine() {
 }
 
 /* ============================================================
- * Init Wait Helper
+ * World State Wiring
  * ========================================================== */
 
-async function waitForInit() {
+/**
+ * Pushes state updates
+ * through entire engine.
+ */
+function broadcastWorldState() {
 
-  while (
-    initializing &&
-    !initialized
-  ) {
-
-    await new Promise(
-      (resolve) =>
-        setTimeout(resolve, 16)
-    );
+  if (!router) {
+    return;
   }
+
+  const snapshot =
+    WorldState.snapshot();
+
+  /**
+   * Broadcast to experts.
+   */
+
+  router.broadcastState(
+    snapshot
+  );
+
+  /**
+   * Update acoustics.
+   */
+
+  acousticBus
+    ?.updateAcoustics(
+      snapshot
+    );
 }
 
 /* ============================================================
- * Global State Controls
+ * Global Controls
  * ========================================================== */
 
 /**
  * Atmospheric Pressure
  */
 
-pressureSlider.addEventListener(
-  "input",
-  async (e) => {
+pressureSlider
+  ?.addEventListener(
+    "input",
+    () => {
 
-    /**
-     * FIRST USER GESTURE
-     */
+      const value =
+        Number(
+          pressureSlider.value
+        );
 
-    await initEngine();
+      pressureValue.textContent =
+        value.toFixed(2);
 
-    const value =
-      Number(e.target.value);
+      WorldState
+        .setAtmosphericPressure(
+          value
+        );
 
-    /**
-     * UI feedback.
-     */
-
-    pressureValue.textContent =
-      value.toFixed(2);
-
-    /**
-     * Update WorldState.
-     */
-
-    WorldState
-      .setAtmosphericPressure(
-        value
-      );
-
-    /**
-     * Broadcast to experts.
-     */
-
-    router.broadcastState(
-      WorldState.snapshot()
-    );
-  }
-);
+      broadcastWorldState();
+    }
+  );
 
 /**
  * Enclosure
  */
 
-enclosureSelect.addEventListener(
-  "change",
-  async (e) => {
+enclosureSelect
+  ?.addEventListener(
+    "change",
+    () => {
 
-    /**
-     * FIRST USER GESTURE
-     */
+      WorldState
+        .setEnclosure(
+          enclosureSelect.value
+        );
 
-    await initEngine();
-
-    const enclosure =
-      e.target.value;
-
-    /**
-     * Update WorldState.
-     */
-
-    WorldState.setEnclosure(
-      enclosure
-    );
-
-    /**
-     * Broadcast.
-     */
-
-    const snapshot =
-      WorldState.snapshot();
-
-    router.broadcastState(
-      snapshot
-    );
-
-    /**
-     * Update acoustics.
-     */
-
-    bus.updateAcoustics(
-      snapshot
-    );
-  }
-);
+      broadcastWorldState();
+    }
+  );
 
 /* ============================================================
- * Add Expert
- * ========================================================== */
-
-addExpertBtn.addEventListener(
-  "click",
-  async () => {
-
-    /**
-     * FIRST USER GESTURE
-     */
-
-    await initEngine();
-
-    /**
-     * Show existing sheet.
-     */
-
-    sheetOverlay.classList.add(
-      "open"
-    );
-
-    /**
-     * Runtime code injection.
-     */
-
-    const pastedCode =
-      prompt(
-        "Paste Expert Module Code (ES6)"
-      );
-
-    /**
-     * User cancelled.
-     */
-
-    if (
-      !pastedCode ||
-      !pastedCode.trim()
-    ) {
-
-      return;
-    }
-
-    try {
-
-      /**
-       * ======================================================
-       * Dynamic Blob Module
-       * ======================================================
-       */
-
-      const blob =
-        new Blob(
-          [pastedCode],
-          {
-            type:
-              "application/javascript",
-          }
-        );
-
-      const url =
-        URL.createObjectURL(
-          blob
-        );
-
-      /**
-       * Dynamic runtime import.
-       */
-
-      const module =
-        await import(url);
-
-      /**
-       * Cleanup blob URL.
-       */
-
-      URL.revokeObjectURL(
-        url
-      );
-
-      /**
-       * Validate default export.
-       */
-
-      if (
-        typeof module.default !==
-        "function"
-      ) {
-
-        throw new Error(
-          "Module must export default class."
-        );
-      }
-
-      /**
-       * ======================================================
-       * Expert Instantiation
-       * ======================================================
-       */
-
-      const expert =
-        new module.default(
-          bus.context,
-          bus.getInputBus()
-        );
-
-      /**
-       * ======================================================
-       * Register Expert
-       * ======================================================
-       */
-
-      router.registerExpert(
-        expert
-      );
-
-      experts.push(
-        expert
-      );
-
-      /**
-       * ======================================================
-       * Hydrate immediately
-       * ======================================================
-       */
-
-      if (
-        typeof expert
-          .onStateUpdate ===
-        "function"
-      ) {
-
-        expert.onStateUpdate(
-          WorldState.snapshot()
-        );
-      }
-
-      /**
-       * ======================================================
-       * UI Card
-       * ======================================================
-       */
-
-      appendExpertCard(
-        expert
-      );
-
-      console.log(
-        "[App] Expert injected:",
-        expert.name ||
-        expert.constructor.name
-      );
-
-    } catch (err) {
-
-      console.error(
-        "[App] Dynamic injection failed:",
-        err
-      );
-
-      alert(
-        "Failed to inject expert.\nCheck console."
-      );
-    }
-  }
-);
-
-/* ============================================================
- * Dynamic Expert Card
+ * Modal Controls
  * ========================================================== */
 
 /**
- * Appends runtime UI card.
+ * Open modal.
  *
- * @param {object} expert
+ * IMPORTANT:
+ * First interaction initializes audio.
  */
-function appendExpertCard(
-  expert
-) {
 
-  const card =
-    document.createElement(
-      "article"
-    );
+addExpertBtn
+  ?.addEventListener(
+    "click",
+    async () => {
 
-  card.className =
-    "expert-card glass";
+      await initEngine();
 
-  card.innerHTML = `
-    <div class="expert-top">
+      sheetOverlay
+        ?.classList
+        .add("open");
+    }
+  );
 
-      <div>
+/**
+ * Close modal.
+ */
 
-        <div class="expert-name">
-          ${
-            expert.name ||
-            "Injected Expert"
-          }
-        </div>
-
-        <div class="expert-type">
-          Runtime Injected Module
-        </div>
-
-      </div>
-
-      <div class="badge">
-        Active
-      </div>
-
-    </div>
-
-    <div class="control">
-
-      <div class="control-top">
-
-        <div class="label">
-          Local Density
-        </div>
-
-        <div class="value">
-          1.00
-        </div>
-
-      </div>
-
-      <input
-        type="range"
-        min="0.1"
-        max="2"
-        step="0.01"
-        value="1"
-      />
-
-    </div>
-  `;
-
-  /**
-   * Optional local parameter control.
-   */
-
-  const slider =
-    card.querySelector(
-      "input"
-    );
-
-  const value =
-    card.querySelector(
-      ".value"
-    );
-
-  slider.addEventListener(
-    "input",
+sheetOverlay
+  ?.addEventListener(
+    "click",
     (e) => {
 
-      const v =
-        Number(e.target.value);
-
-      value.textContent =
-        v.toFixed(2);
-
-      /**
-       * Route to expert.
-       */
-
       if (
-        typeof expert
-          .setLocalParameter ===
-        "function"
+        e.target ===
+        sheetOverlay
       ) {
 
-        expert.setLocalParameter(
-          "density",
-          v
-        );
+        sheetOverlay
+          .classList
+          .remove("open");
       }
     }
   );
 
-  layersContainer.appendChild(
-    card
+/* ============================================================
+ * Atmosphere Injection
+ * ========================================================== */
+
+/**
+ * Existing rain button.
+ */
+
+const rainButton =
+  document.querySelector(
+    '[data-layer="rain"]'
   );
+
+rainButton
+  ?.addEventListener(
+    "click",
+    async () => {
+
+      await injectRainExpert();
+
+      sheetOverlay
+        ?.classList
+        .remove("open");
+    }
+  );
+
+/* ============================================================
+ * Rain Expert Injection
+ * ========================================================== */
+
+async function injectRainExpert() {
+
+  /**
+   * Ensure engine exists.
+   */
+
+  await initEngine();
+
+  try {
+
+    /**
+     * Dynamic import.
+     */
+
+    const module =
+      await import(
+        "./expert_rain.js"
+      );
+
+    const RainExpert =
+      module.default;
+
+    /**
+     * Instantiate expert.
+     */
+
+    const expert =
+      new RainExpert(
+        acousticBus.context,
+        acousticBus
+          .getInputBus()
+      );
+
+    /**
+     * Register to router.
+     */
+
+    router.registerExpert(
+      expert
+    );
+
+    experts.push(expert);
+
+    /**
+     * Build UI.
+     */
+
+    const wrapper =
+      document
+        .createElement(
+          "div"
+        );
+
+    wrapper.innerHTML =
+      expert.getUICard();
+
+    const element =
+      wrapper.firstElementChild;
+
+    /**
+     * Mount UI.
+     */
+
+    layerContainer
+      ?.appendChild(
+        element
+      );
+
+    /**
+     * Bind expert controls.
+     */
+
+    if (
+      typeof expert.bindUI ===
+      "function"
+    ) {
+
+      expert.bindUI(
+        element
+      );
+    }
+
+    /**
+     * Hydrate with current state.
+     */
+
+    expert.onStateUpdate(
+      WorldState.snapshot()
+    );
+
+    console.log(
+      "[Engine] Rain expert injected."
+    );
+
+  } catch (err) {
+
+    console.error(
+      "[Engine] Failed to inject RainExpert:",
+      err
+    );
+  }
 }
 
 /* ============================================================
- * Bottom Sheet Close
+ * Dynamic Runtime Injection
  * ========================================================== */
 
-sheetOverlay.addEventListener(
-  "click",
-  (e) => {
+/**
+ * Inject custom runtime expert button.
+ */
 
-    if (
-      e.target ===
-      sheetOverlay
-    ) {
+function injectCustomCodeButton() {
 
-      sheetOverlay.classList.remove(
-        "open"
-      );
-    }
+  const sheet =
+    document.querySelector(
+      ".sheet-grid"
+    );
+
+  if (!sheet) {
+    return;
   }
-);
+
+  /**
+   * Prevent duplicates.
+   */
+
+  if (
+    document.getElementById(
+      "injectCodeBtn"
+    )
+  ) {
+
+    return;
+  }
+
+  const button =
+    document.createElement(
+      "button"
+    );
+
+  button.className =
+    "sheet-item";
+
+  button.id =
+    "injectCodeBtn";
+
+  button.innerHTML = `
+    <div class="sheet-item-title">
+      Custom · Paste Expert Code
+    </div>
+
+    <div class="sheet-item-sub">
+      Runtime ES6 module injection
+    </div>
+  `;
+
+  sheet.appendChild(
+    button
+  );
+
+  /**
+   * Runtime injection.
+   */
+
+  button.addEventListener(
+    "click",
+    async () => {
+
+      await initEngine();
+
+      const code =
+        prompt(
+`Paste ES6 expert module code.
+
+Required:
+export default class Expert {
+  constructor(audioContext, inputBus) {}
+  onStateUpdate(state) {}
+  getUICard() {}
+}`
+        );
+
+      if (!code) {
+        return;
+      }
+
+      try {
+
+        /**
+         * Create runtime module.
+         */
+
+        const blob =
+          new Blob(
+            [code],
+            {
+              type:
+                "application/javascript",
+            }
+          );
+
+        const url =
+          URL.createObjectURL(
+            blob
+          );
+
+        /**
+         * Dynamic import.
+         */
+
+        const module =
+          await import(url);
+
+        URL.revokeObjectURL(
+          url
+        );
+
+        const ExpertClass =
+          module.default;
+
+        if (
+          typeof ExpertClass !==
+          "function"
+        ) {
+
+          throw new Error(
+            "No default export class found."
+          );
+        }
+
+        /**
+         * Instantiate.
+         */
+
+        const expert =
+          new ExpertClass(
+            acousticBus.context,
+            acousticBus
+              .getInputBus()
+          );
+
+        /**
+         * Register.
+         */
+
+        router.registerExpert(
+          expert
+        );
+
+        experts.push(expert);
+
+        /**
+         * UI.
+         */
+
+        if (
+          typeof expert
+            .getUICard ===
+          "function"
+        ) {
+
+          const wrapper =
+            document
+              .createElement(
+                "div"
+              );
+
+          wrapper.innerHTML =
+            expert.getUICard();
+
+          const element =
+            wrapper.firstElementChild;
+
+          layerContainer
+            ?.appendChild(
+              element
+            );
+
+          if (
+            typeof expert
+              .bindUI ===
+            "function"
+          ) {
+
+            expert.bindUI(
+              element
+            );
+          }
+        }
+
+        /**
+         * Hydrate.
+         */
+
+        if (
+          typeof expert
+            .onStateUpdate ===
+          "function"
+        ) {
+
+          expert.onStateUpdate(
+            WorldState.snapshot()
+          );
+        }
+
+        /**
+         * Close modal.
+         */
+
+        sheetOverlay
+          ?.classList
+          .remove("open");
+
+        console.log(
+          "[Engine] Runtime expert injected."
+        );
+
+      } catch (err) {
+
+        console.error(
+          "[Engine] Runtime injection failed:",
+          err
+        );
+
+        alert(
+          "Failed to inject expert module. Check console."
+        );
+      }
+    }
+  );
+}
+
+/**
+ * Initialize runtime injection UI.
+ */
+
+injectCustomCodeButton();
 
 /* ============================================================
- * Initial Defaults
+ * Initial State
  * ========================================================== */
 
-WorldState.setEnclosure(
-  ENCLOSURE_TYPES.OPEN
+WorldState.setAtmosphericPressure(
+  Number(
+    pressureSlider?.value || 0
+  )
 );
 
-WorldState
-  .setAtmosphericPressure(
-    Number(
-      pressureSlider.value
-    )
-  );
+WorldState.setEnclosure(
+  enclosureSelect?.value ||
+  ENCLOSURE_TYPES.OPEN
+);
