@@ -1,6 +1,36 @@
 /**
  * app.js
- * Studio Glue Layer
+ * Procedural Acoustic World Simulator
+ * Studio Integration Layer
+ *
+ * ------------------------------------------------------------
+ * RESPONSIBILITIES
+ * ------------------------------------------------------------
+ *
+ * - UI ↔ DSP bridge
+ * - Layer management
+ * - Just-In-Time audio initialization
+ * - Runtime ecology control
+ * - Mobile-first interaction safety
+ *
+ * ------------------------------------------------------------
+ * CRITICAL FIX
+ * ------------------------------------------------------------
+ *
+ * Prevents race condition:
+ *
+ * User clicks:
+ *   Add Layer -> Rain
+ * BEFORE:
+ *   Initialize Audio
+ *
+ * Previously:
+ *   environment === null
+ *
+ * Now:
+ * - automatic async initialization
+ * - safe re-entry guard
+ * - singleton runtime creation
  */
 
 import {
@@ -46,38 +76,217 @@ const layerContainer =
  * ========================================================== */
 
 let environment = null;
+
 let sampleBank = null;
+
 let scheduler = null;
 
+/**
+ * Prevent duplicate initialization.
+ */
+let initialized = false;
+
+/**
+ * Prevent parallel async init race.
+ */
+let initializing = false;
+
+/**
+ * Active runtime layers.
+ */
 const layers = [];
 
 /* ============================================================
- * Init
+ * Initialization
  * ========================================================== */
 
+/**
+ * Initializes:
+ * - AudioContext
+ * - DSP Environment
+ * - SampleBank
+ * - Scheduler
+ *
+ * SAFE:
+ * - idempotent
+ * - re-entrant protected
+ * - race-safe
+ */
 async function initialize() {
 
-  environment =
-    new AcousticEnvironment();
+  /**
+   * Already initialized.
+   */
+  if (initialized) {
 
-  await environment.context.resume();
+    /**
+     * Mobile browsers may suspend context.
+     */
+    if (
+      environment?.context?.state ===
+      "suspended"
+    ) {
 
-  sampleBank =
-    new SampleBank(
-      environment.context
+      await environment.context
+        .resume();
+    }
+
+    return;
+  }
+
+  /**
+   * Prevent concurrent init calls.
+   */
+  if (initializing) {
+
+    /**
+     * Wait until initialized.
+     */
+    await waitForInitialization();
+
+    return;
+  }
+
+  initializing = true;
+
+  try {
+
+    /**
+     * ========================================================
+     * Acoustic Environment
+     * ========================================================
+     */
+
+    environment =
+      new AcousticEnvironment();
+
+    /**
+     * Explicit resume required
+     * on mobile browsers.
+     */
+
+    await environment.context
+      .resume();
+
+    /**
+     * ========================================================
+     * SampleBank
+     * ========================================================
+     */
+
+    sampleBank =
+      new SampleBank(
+        environment.context
+      );
+
+    /**
+     * ========================================================
+     * Scheduler
+     * ========================================================
+     */
+
+    scheduler =
+      new AtomicScheduler();
+
+    scheduler.start();
+
+    /**
+     * ========================================================
+     * Runtime State
+     * ========================================================
+     */
+
+    initialized = true;
+
+    /**
+     * UI Feedback
+     */
+
+    initBtn.textContent =
+      "Audio Active";
+
+    initBtn.disabled = true;
+
+  } catch (err) {
+
+    console.error(
+      "[App] Initialization failed:",
+      err
     );
 
-  scheduler =
-    new AtomicScheduler();
+    initialized = false;
 
-  scheduler.start();
+  } finally {
+
+    initializing = false;
+  }
+}
+
+/* ============================================================
+ * Initialization Wait Helper
+ * ========================================================== */
+
+/**
+ * Waits for async init completion.
+ *
+ * Prevents:
+ * - duplicate contexts
+ * - parallel init race
+ */
+async function waitForInitialization() {
+
+  while (
+    initializing &&
+    !initialized
+  ) {
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(resolve, 16)
+    );
+  }
 }
 
 /* ============================================================
  * Layer Builders
  * ========================================================== */
 
-function addRainLayer() {
+/**
+ * Adds procedural rain layer.
+ *
+ * CRITICAL:
+ * Auto-initializes audio safely.
+ */
+async function addRainLayer() {
+
+  /**
+   * --------------------------------------------------------
+   * JIT Initialization
+   * --------------------------------------------------------
+   */
+
+  if (!initialized) {
+    await initialize();
+  }
+
+  /**
+   * Safety fallback.
+   */
+
+  if (!environment) {
+
+    console.warn(
+      "[App] Environment unavailable."
+    );
+
+    return;
+  }
+
+  /**
+   * ========================================================
+   * DSP Layer
+   * ========================================================
+   */
 
   const rain =
     new ParticleRainSynth(
@@ -85,6 +294,12 @@ function addRainLayer() {
     );
 
   layers.push(rain);
+
+  /**
+   * ========================================================
+   * UI Card
+   * ========================================================
+   */
 
   const card =
     document.createElement("div");
@@ -116,6 +331,12 @@ function addRainLayer() {
     </div>
   `;
 
+  /**
+   * ========================================================
+   * Slider
+   * ========================================================
+   */
+
   const slider =
     card.querySelector("input");
 
@@ -126,19 +347,72 @@ function addRainLayer() {
       const value =
         Number(e.target.value);
 
+      /**
+       * DSP update.
+       */
+
       rain.update(value);
+
+      /**
+       * World state update.
+       */
 
       WorldState
         .setRainIntensity(value);
     }
   );
 
+  /**
+   * ========================================================
+   * Mount
+   * ========================================================
+   */
+
   layerContainer.appendChild(
     card
   );
 }
 
-function addBirdLayer() {
+/**
+ * Adds bird ecology layer.
+ *
+ * CRITICAL:
+ * Auto-initializes audio safely.
+ */
+async function addBirdLayer() {
+
+  /**
+   * --------------------------------------------------------
+   * JIT Initialization
+   * --------------------------------------------------------
+   */
+
+  if (!initialized) {
+    await initialize();
+  }
+
+  /**
+   * Safety fallback.
+   */
+
+  if (
+    !environment ||
+    !sampleBank ||
+    !scheduler
+  ) {
+
+    console.warn(
+      "[App] Runtime unavailable."
+    );
+
+    return;
+  }
+
+  /**
+   * ========================================================
+   * Ecology Layer
+   * ========================================================
+   */
 
   const birds =
     new EcologicalAudioBehavior({
@@ -154,11 +428,21 @@ function addBirdLayer() {
 
       environment,
       sampleBank,
+
+      baseVolume: 0.3,
     });
 
   scheduler.registerBehavior(
     birds
   );
+
+  layers.push(birds);
+
+  /**
+   * ========================================================
+   * UI Card
+   * ========================================================
+   */
 
   const card =
     document.createElement("div");
@@ -190,6 +474,12 @@ function addBirdLayer() {
     </div>
   `;
 
+  /**
+   * ========================================================
+   * Slider
+   * ========================================================
+   */
+
   const slider =
     card.querySelector("input");
 
@@ -202,15 +492,24 @@ function addBirdLayer() {
     }
   );
 
+  /**
+   * ========================================================
+   * Mount
+   * ========================================================
+   */
+
   layerContainer.appendChild(
     card
   );
 }
 
 /* ============================================================
- * Modal
+ * Modal Logic
  * ========================================================== */
 
+/**
+ * Open modal.
+ */
 addLayerBtn.addEventListener(
   "click",
   () => {
@@ -221,6 +520,9 @@ addLayerBtn.addEventListener(
   }
 );
 
+/**
+ * Close modal on backdrop.
+ */
 layerModal.addEventListener(
   "click",
   (e) => {
@@ -236,27 +538,57 @@ layerModal.addEventListener(
   }
 );
 
+/* ============================================================
+ * Layer Selection
+ * ========================================================== */
+
 document
   .querySelectorAll("[data-layer]")
   .forEach((btn) => {
 
     btn.addEventListener(
       "click",
-      () => {
+      async () => {
 
         const type =
           btn.dataset.layer;
 
+        /**
+         * ----------------------------------------------------
+         * Async layer creation.
+         * ----------------------------------------------------
+         */
+
         switch (type) {
 
           case "rain":
-            addRainLayer();
+
+            await addRainLayer();
+
             break;
 
           case "birds":
-            addBirdLayer();
+
+            await addBirdLayer();
+
+            break;
+
+          case "typing":
+
+            /**
+             * Reserved future layer.
+             */
+
+            console.log(
+              "[App] Typing layer not implemented yet."
+            );
+
             break;
         }
+
+        /**
+         * Close modal.
+         */
 
         layerModal.classList.remove(
           "open"
@@ -266,27 +598,43 @@ document
   });
 
 /* ============================================================
- * Init Button
+ * Manual Initialize Button
  * ========================================================== */
 
 initBtn.addEventListener(
   "click",
   async () => {
 
-    await initialize();
+    try {
 
-    initBtn.textContent =
-      "Audio Active";
+      await initialize();
+
+    } catch (err) {
+
+      console.error(
+        "[App] Init button failed:",
+        err
+      );
+    }
   }
 );
 
 /* ============================================================
- * Acoustics Loop
+ * Acoustics Frame Loop
  * ========================================================== */
 
+/**
+ * Continuous acoustics update loop.
+ *
+ * Handles:
+ * - enclosure filtering
+ * - future environmental morphing
+ * - global DSP state
+ */
 function frame() {
 
   if (environment) {
+
     environment
       .updateAcoustics();
   }
@@ -296,4 +644,17 @@ function frame() {
   );
 }
 
+/**
+ * Start loop immediately.
+ */
 frame();
+
+/* ============================================================
+ * Default World State
+ * ========================================================== */
+
+WorldState.setRainIntensity(0);
+
+WorldState.setEnclosure(
+  ENCLOSURE_TYPES.OPEN
+);
