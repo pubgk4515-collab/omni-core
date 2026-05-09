@@ -1,17 +1,26 @@
 /**
  * app.js
- * Compact MoE Acoustic World Model
+ * Symbiote Acoustic MoE World Simulator
  *
  * ------------------------------------------------------------
  * RESPONSIBILITIES
  * ------------------------------------------------------------
  *
- * - UI ↔ Engine bridge
- * - Modal lifecycle
+ * - UI ↔ Engine integration
  * - Runtime expert injection
  * - Dynamic ES6 module loading
- * - WorldState propagation
- * - Failsafe audio initialization
+ * - Global state propagation
+ * - Expert lifecycle management
+ *
+ * ------------------------------------------------------------
+ * IMPORTANT
+ * ------------------------------------------------------------
+ *
+ * Audio initialization is:
+ * - lazy
+ * - gesture-safe
+ * - mobile-safe
+ * - singleton-protected
  */
 
 /* ============================================================
@@ -20,31 +29,20 @@
 
 import {
   WorldState,
-  MoERouter,
-  ENCLOSURE_TYPES,
+  BehavioralRulesEngine,
 } from "./world_brain.js";
 
 import {
-  MasterAcousticBus,
+  AcousticEnvironment,
 } from "./acoustic_bus.js";
 
 /* ============================================================
  * DOM
  * ========================================================== */
 
-const addExpertBtn =
+const enclosureSelect =
   document.getElementById(
-    "addExpertBtn"
-  );
-
-const layerModal =
-  document.getElementById(
-    "layerModal"
-  );
-
-const layerContainer =
-  document.getElementById(
-    "layerContainer"
+    "enclosureSelect"
   );
 
 const pressureSlider =
@@ -57,9 +55,14 @@ const pressureValue =
     "pressureValue"
   );
 
-const enclosureSelect =
+const expertRack =
   document.getElementById(
-    "enclosureSelect"
+    "expertRack"
+  );
+
+const rainButton =
+  document.querySelector(
+    '[data-expert="rain"]'
   );
 
 const injectCodeBtn =
@@ -71,69 +74,70 @@ const injectCodeBtn =
  * Runtime
  * ========================================================== */
 
-let acousticBus = null;
+/**
+ * Shared audio environment.
+ */
 
-let router = null;
+let environment = null;
+
+/**
+ * Prevent duplicate init.
+ */
 
 let initialized = false;
+
+/**
+ * Prevent parallel init.
+ */
 
 let initializing = false;
 
 /**
- * Runtime expert instances.
+ * Runtime expert registry.
+ *
+ * Map<string, object>
  */
-const experts = [];
+
+const activeExperts =
+  new Map();
 
 /* ============================================================
- * Modal
- * ========================================================== */
-
-function openModal() {
-
-  layerModal.classList.add(
-    "open"
-  );
-}
-
-function closeModal() {
-
-  layerModal.classList.remove(
-    "open"
-  );
-}
-
-/* ============================================================
- * Engine Bootstrap
+ * Engine Initialization
  * ========================================================== */
 
 /**
- * Failsafe engine initializer.
+ * Lazy-safe initialization.
  *
  * Prevents:
- * - null AudioContext
- * - duplicate contexts
- * - race conditions
+ * - null context
+ * - duplicate AudioContexts
+ * - autoplay policy failures
  */
 async function ensureEngine() {
 
   /**
-   * Existing runtime.
+   * Already initialized.
    */
 
   if (initialized) {
 
+    /**
+     * Resume if suspended.
+     */
+
     if (
-      acousticBus?.context
+      environment
+        ?.context
         ?.state ===
       "suspended"
     ) {
 
-      await acousticBus
+      await environment
         .context
         .resume();
     }
 
-    return;
+    return environment;
   }
 
   /**
@@ -156,7 +160,7 @@ async function ensureEngine() {
       );
     }
 
-    return;
+    return environment;
   }
 
   initializing = true;
@@ -165,47 +169,44 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Master Bus
+     * Acoustic Environment
      * ========================================================
      */
 
-    acousticBus =
-      new MasterAcousticBus();
-
-    await acousticBus.init();
+    environment =
+      new AcousticEnvironment();
 
     /**
-     * ========================================================
-     * Router
-     * ========================================================
+     * Mobile autoplay safety.
      */
 
-    router =
-      new MoERouter();
+    if (
+      environment.context
+        .state ===
+      "suspended"
+    ) {
 
-    /**
-     * ========================================================
-     * Initial Acoustics
-     * ========================================================
-     */
-
-    acousticBus
-      .updateAcoustics(
-        WorldState.snapshot()
-      );
+      await environment
+        .context
+        .resume();
+    }
 
     initialized = true;
 
     console.log(
-      "[Engine] Ready."
+      "[Engine] Initialized."
     );
+
+    return environment;
 
   } catch (err) {
 
     console.error(
-      "[Engine] Bootstrap failed:",
+      "[Engine] Failed to initialize:",
       err
     );
+
+    return null;
 
   } finally {
 
@@ -214,34 +215,83 @@ async function ensureEngine() {
 }
 
 /* ============================================================
- * State Broadcast
+ * Global State Updates
  * ========================================================== */
 
-function pushState() {
-
-  if (!router) {
-    return;
-  }
+/**
+ * Push current state to:
+ * - WorldState
+ * - Environment
+ * - Experts
+ */
+function propagateState() {
 
   const snapshot =
     WorldState.snapshot();
 
-  router.broadcastState(
-    snapshot
-  );
+  /**
+   * Update environment acoustics.
+   */
 
-  acousticBus
-    ?.updateAcoustics(
-      snapshot
-    );
+  if (
+    environment &&
+    typeof environment
+      .updateAcoustics ===
+      "function"
+  ) {
+
+    environment
+      .updateAcoustics(
+        snapshot
+      );
+  }
+
+  /**
+   * Update experts.
+   */
+
+  for (
+    const expert
+    of activeExperts.values()
+  ) {
+
+    if (
+      typeof expert
+        .onStateUpdate ===
+      "function"
+    ) {
+
+      expert.onStateUpdate(
+        snapshot
+      );
+    }
+  }
 }
 
 /* ============================================================
- * UI Controls
+ * Global UI Listeners
  * ========================================================== */
 
 /**
- * Pressure Slider
+ * Enclosure
+ */
+
+enclosureSelect
+  ?.addEventListener(
+    "change",
+    () => {
+
+      WorldState
+        .setEnclosure(
+          enclosureSelect.value
+        );
+
+      propagateState();
+    }
+  );
+
+/**
+ * Atmospheric Pressure
  */
 
 pressureSlider
@@ -262,199 +312,142 @@ pressureSlider
           value
         );
 
-      pushState();
+      propagateState();
     }
   );
-
-/**
- * Enclosure
- */
-
-enclosureSelect
-  ?.addEventListener(
-    "change",
-    () => {
-
-      WorldState
-        .setEnclosure(
-          enclosureSelect.value
-        );
-
-      pushState();
-    }
-  );
-
-/* ============================================================
- * Modal Controls
- * ========================================================== */
-
-/**
- * Open
- */
-
-addExpertBtn
-  ?.addEventListener(
-    "click",
-    openModal
-  );
-
-/**
- * Close on overlay click
- */
-
-layerModal
-  ?.addEventListener(
-    "click",
-    (e) => {
-
-      /**
-       * Overlay only.
-       */
-
-      if (
-        e.target ===
-        layerModal
-      ) {
-
-        closeModal();
-      }
-    }
-  );
-
-/**
- * Close on ANY modal button.
- */
-
-document
-  .querySelectorAll(
-    ".sheet-btn"
-  )
-  .forEach((btn) => {
-
-    btn.addEventListener(
-      "click",
-      () => {
-
-        closeModal();
-      }
-    );
-  });
 
 /* ============================================================
  * Rain Expert Injection
  * ========================================================== */
-
-const rainButton =
-  document.querySelector(
-    '[data-layer="rain"]'
-  );
 
 rainButton
   ?.addEventListener(
     "click",
     async () => {
 
-      await ensureEngine();
-
-      try {
-
-        /**
-         * Dynamic import.
-         */
-
-        const module =
-          await import(
-            "./expert_rain.js"
-          );
-
-        const RainExpert =
-          module.default;
-
-        /**
-         * Create expert.
-         */
-
-        const expert =
-          new RainExpert(
-            acousticBus.context,
-            acousticBus
-              .getInputBus()
-          );
-
-        /**
-         * Register.
-         */
-
-        router.registerExpert(
-          expert
-        );
-
-        experts.push(expert);
-
-        /**
-         * Build UI.
-         */
-
-        const wrapper =
-          document
-            .createElement(
-              "div"
-            );
-
-        wrapper.innerHTML =
-          expert.getUICard();
-
-        const card =
-          wrapper
-            .firstElementChild;
-
-        /**
-         * Mount.
-         */
-
-        layerContainer
-          ?.appendChild(
-            card
-          );
-
-        /**
-         * Bind card UI.
-         */
-
-        if (
-          typeof expert.bindUI ===
-          "function"
-        ) {
-
-          expert.bindUI(
-            card
-          );
-        }
-
-        /**
-         * Hydrate.
-         */
-
-        expert.onStateUpdate(
-          WorldState.snapshot()
-        );
-
-        console.log(
-          "[Engine] Rain expert injected."
-        );
-
-      } catch (err) {
-
-        console.error(
-          "[Engine] Rain injection failed:",
-          err
-        );
-      }
+      await injectRainExpert();
     }
   );
 
+/**
+ * Dynamic RainExpert loader.
+ */
+async function injectRainExpert() {
+
+  try {
+
+    /**
+     * Ensure audio exists.
+     */
+
+    await ensureEngine();
+
+    if (!environment) {
+      return;
+    }
+
+    /**
+     * ========================================================
+     * Dynamic Import
+     * ========================================================
+     */
+
+    const module =
+      await import(
+        "./expert_rain.js"
+      );
+
+    const RainExpert =
+      module.default;
+
+    /**
+     * ========================================================
+     * Instantiate
+     * ========================================================
+     */
+
+    const expert =
+      new RainExpert(
+        environment.context,
+        environment
+          .getInputBus()
+      );
+
+    /**
+     * ========================================================
+     * Register
+     * ========================================================
+     */
+
+    activeExperts.set(
+      expert.id,
+      expert
+    );
+
+    /**
+     * ========================================================
+     * UI
+     * ========================================================
+     */
+
+    const wrapper =
+      document
+        .createElement(
+          "div"
+        );
+
+    wrapper.innerHTML =
+      expert.getUICard();
+
+    const card =
+      wrapper.firstElementChild;
+
+    /**
+     * Append.
+     */
+
+    expertRack.appendChild(
+      card
+    );
+
+    /**
+     * Local UI binding.
+     */
+
+    if (
+      typeof expert
+        .bindCardControls ===
+      "function"
+    ) {
+
+      expert.bindCardControls(
+        card
+      );
+    }
+
+    /**
+     * Hydrate current state.
+     */
+
+    expert.onStateUpdate(
+      WorldState.snapshot()
+    );
+
+    console.log(
+      "[Engine] Rain expert injected."
+    );
+
+  } catch (err) {
+
+    console.error(
+      "[Engine] Failed to inject RainExpert:",
+      err
+    );
+  }
+}
+
 /* ============================================================
- * Runtime Code Injection
+ * Runtime ES6 Injection
  * ========================================================== */
 
 injectCodeBtn
@@ -462,21 +455,41 @@ injectCodeBtn
     "click",
     async () => {
 
-      await ensureEngine();
-
-      const code =
-        prompt(
-          "Paste ES6 Expert Code:"
-        );
-
-      if (!code) {
-        return;
-      }
-
       try {
 
+        await ensureEngine();
+
+        if (!environment) {
+          return;
+        }
+
         /**
-         * Runtime module blob.
+         * ====================================================
+         * Prompt
+         * ====================================================
+         */
+
+        const code =
+          prompt(
+`Paste ES6 Expert Class Code:
+
+Example:
+
+export default class MyExpert {
+  constructor(audioContext, inputBus) {}
+  getUICard() {}
+  destroy() {}
+}`
+          );
+
+        if (!code) {
+          return;
+        }
+
+        /**
+         * ====================================================
+         * Blob Module
+         * ====================================================
          */
 
         const blob =
@@ -494,7 +507,9 @@ injectCodeBtn
           );
 
         /**
-         * Dynamic import.
+         * ====================================================
+         * Dynamic Import
+         * ====================================================
          */
 
         const module =
@@ -513,70 +528,87 @@ injectCodeBtn
         ) {
 
           throw new Error(
-            "Default export class missing."
+            "No default export class found."
           );
         }
 
         /**
-         * Instantiate.
+         * ====================================================
+         * Instantiate
+         * ====================================================
          */
 
         const expert =
           new ExpertClass(
-            acousticBus.context,
-            acousticBus
+            environment.context,
+            environment
               .getInputBus()
           );
 
         /**
-         * Register.
+         * Safety.
          */
 
-        router.registerExpert(
+        if (!expert.id) {
+
+          expert.id =
+            crypto.randomUUID();
+        }
+
+        /**
+         * ====================================================
+         * Register
+         * ====================================================
+         */
+
+        activeExperts.set(
+          expert.id,
           expert
         );
 
-        experts.push(expert);
-
         /**
-         * Dummy UI fallback.
+         * ====================================================
+         * UI
+         * ====================================================
          */
 
-        const card =
-          document
-            .createElement(
-              "article"
-            );
+        if (
+          typeof expert
+            .getUICard ===
+          "function"
+        ) {
 
-        card.className =
-          "expert-card glass";
+          const wrapper =
+            document
+              .createElement(
+                "div"
+              );
 
-        card.innerHTML = `
-          <div class="expert-top">
+          wrapper.innerHTML =
+            expert.getUICard();
 
-            <div>
+          const card =
+            wrapper.firstElementChild;
 
-              <div class="expert-name">
-                Runtime Expert
-              </div>
-
-              <div class="expert-type">
-                Dynamic ES6 Injection
-              </div>
-
-            </div>
-
-            <div class="badge">
-              Active
-            </div>
-
-          </div>
-        `;
-
-        layerContainer
-          ?.appendChild(
+          expertRack.appendChild(
             card
           );
+
+          /**
+           * Optional UI binding.
+           */
+
+          if (
+            typeof expert
+              .bindCardControls ===
+            "function"
+          ) {
+
+            expert.bindCardControls(
+              card
+            );
+          }
+        }
 
         /**
          * Hydrate.
@@ -600,28 +632,166 @@ injectCodeBtn
       } catch (err) {
 
         console.error(
-          "[Engine] Injection failed:",
+          "[Engine] Runtime injection failed:",
           err
         );
 
         alert(
-          "Failed to inject expert module."
+          "Expert injection failed. Check console."
         );
       }
     }
   );
 
 /* ============================================================
- * Initial World State
+ * Remove Expert Delegation
  * ========================================================== */
+
+/**
+ * CRITICAL:
+ * Handles dynamically-created experts.
+ */
+
+expertRack
+  ?.addEventListener(
+    "click",
+    (e) => {
+
+      /**
+       * Remove button.
+       */
+
+      if (
+        !e.target.classList.contains(
+          "remove-btn"
+        )
+      ) {
+
+        return;
+      }
+
+      /**
+       * Parent card.
+       */
+
+      const card =
+        e.target.closest(
+          ".expert-card"
+        );
+
+      if (!card) {
+        return;
+      }
+
+      /**
+       * Expert ID.
+       */
+
+      const id =
+        card.dataset.id;
+
+      if (!id) {
+        return;
+      }
+
+      /**
+       * Runtime expert.
+       */
+
+      const expert =
+        activeExperts.get(id);
+
+      if (!expert) {
+
+        card.remove();
+
+        return;
+      }
+
+      /**
+       * Lifecycle cleanup.
+       */
+
+      try {
+
+        if (
+          typeof expert.destroy ===
+          "function"
+        ) {
+
+          expert.destroy();
+        }
+
+      } catch (err) {
+
+        console.warn(
+          "[Engine] Expert destroy failed:",
+          err
+        );
+      }
+
+      /**
+       * Remove registry.
+       */
+
+      activeExperts.delete(id);
+
+      /**
+       * Remove UI.
+       */
+
+      card.remove();
+
+      console.log(
+        "[Engine] Expert removed:",
+        id
+      );
+    }
+  );
+
+/* ============================================================
+ * Initial UI Hydration
+ * ========================================================== */
+
+pressureValue.textContent =
+  Number(
+    pressureSlider?.value || 0
+  ).toFixed(2);
+
+/**
+ * Initial world state.
+ */
 
 WorldState.setAtmosphericPressure(
   Number(
-    pressureSlider.value
+    pressureSlider?.value || 0
   )
 );
 
 WorldState.setEnclosure(
-  enclosureSelect.value ||
-  ENCLOSURE_TYPES.OPEN
+  enclosureSelect?.value ||
+  "Open"
 );
+
+/**
+ * Initial propagation.
+ */
+
+propagateState();
+
+/* ============================================================
+ * BehavioralRulesEngine Hook
+ * ========================================================== */
+
+/**
+ * Reserved future ecological routing.
+ */
+
+if (
+  BehavioralRulesEngine
+) {
+
+  console.log(
+    "[Engine] BehavioralRulesEngine detected."
+  );
+}
