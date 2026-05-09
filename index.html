@@ -2,21 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+
   <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0, viewport-fit=cover"
   />
 
-  <title>Symbiote Atmosphere Factory</title>
+  <title>Symbiote — Procedural Acoustic World</title>
 
   <style>
+
     :root {
       --bg: #030303;
       --panel: rgba(255,255,255,0.05);
       --border: rgba(255,255,255,0.08);
-      --text: rgba(255,255,255,0.92);
-      --muted: rgba(255,255,255,0.45);
-      --accent: rgba(255,255,255,0.18);
+
+      --text: rgba(255,255,255,0.94);
+      --muted: rgba(255,255,255,0.5);
+
       --radius: 28px;
     }
 
@@ -27,30 +30,27 @@
 
     html,
     body {
+      margin: 0;
       width: 100%;
       height: 100%;
-      margin: 0;
       overflow: hidden;
+
       background: var(--bg);
       color: var(--text);
+
       font-family:
         Inter,
         ui-sans-serif,
         system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
         sans-serif;
     }
 
     body {
       min-height: 100dvh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       position: relative;
     }
 
-    .background-glow {
+    .background {
       position: absolute;
       inset: 0;
       overflow: hidden;
@@ -60,131 +60,115 @@
     .orb {
       position: absolute;
       border-radius: 999px;
-      filter: blur(90px);
+      filter: blur(100px);
       opacity: 0.18;
     }
 
-    .orb-1 {
-      width: 220px;
-      height: 220px;
-      background: #3b82f6;
-      top: -40px;
-      left: -40px;
-    }
-
-    .orb-2 {
+    .orb-a {
       width: 280px;
       height: 280px;
-      background: #8b5cf6;
-      bottom: -80px;
-      right: -40px;
+      background: #2563eb;
+      top: -60px;
+      left: -80px;
     }
 
-    .shell {
-      width: calc(100vw - 28px);
-      max-width: 460px;
-      height: calc(100dvh - 28px);
-      padding: 18px;
+    .orb-b {
+      width: 340px;
+      height: 340px;
+      background: #7c3aed;
+      right: -100px;
+      bottom: -120px;
+    }
+
+    .app {
+      position: relative;
+      z-index: 2;
+
+      width: 100%;
+      height: 100dvh;
+
+      padding:
+        calc(env(safe-area-inset-top) + 16px)
+        16px
+        calc(env(safe-area-inset-bottom) + 18px);
+
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
-      gap: 18px;
-      z-index: 2;
+      gap: 16px;
     }
 
     .glass {
       background: var(--panel);
+
       border: 1px solid var(--border);
+
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
-      border-radius: var(--radius);
+
       box-shadow:
-        0 0 0 1px rgba(255,255,255,0.02),
         0 10px 40px rgba(0,0,0,0.35);
+
+      border-radius: var(--radius);
     }
 
     .hero {
-      padding: 24px;
+      padding: 22px;
     }
 
     .eyebrow {
       font-size: 11px;
-      letter-spacing: 0.22em;
       text-transform: uppercase;
+      letter-spacing: 0.24em;
       color: var(--muted);
-      margin-bottom: 12px;
+
+      margin-bottom: 10px;
     }
 
     .title {
-      font-size: 34px;
-      line-height: 1;
-      font-weight: 300;
-      letter-spacing: -0.04em;
       margin: 0;
+
+      font-size: 36px;
+      font-weight: 300;
+      letter-spacing: -0.05em;
+      line-height: 1;
     }
 
     .subtitle {
       margin-top: 14px;
-      color: var(--muted);
-      line-height: 1.5;
+
       font-size: 14px;
-      font-weight: 400;
-    }
+      line-height: 1.6;
 
-    .status-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-
-    .status-card {
-      padding: 18px;
-      min-height: 120px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .status-label {
-      font-size: 12px;
       color: var(--muted);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .status-value {
-      font-size: 26px;
-      line-height: 1;
-      font-weight: 300;
-      letter-spacing: -0.03em;
     }
 
     .controls {
       padding: 20px;
+
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 20px;
     }
 
-    .slider-group {
+    .control {
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
 
-    .slider-row {
+    .control-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
     }
 
-    .slider-label {
+    .control-label {
       font-size: 13px;
-      color: var(--muted);
       letter-spacing: 0.05em;
+      color: var(--muted);
     }
 
-    .slider-value {
+    .control-value {
       font-size: 13px;
       color: var(--text);
     }
@@ -192,27 +176,150 @@
     input[type="range"] {
       width: 100%;
       appearance: none;
+
       height: 4px;
       border-radius: 999px;
+
       background: rgba(255,255,255,0.08);
       outline: none;
     }
 
     input[type="range"]::-webkit-slider-thumb {
       appearance: none;
+
       width: 18px;
       height: 18px;
+
       border-radius: 999px;
       background: white;
-      border: none;
+
       cursor: pointer;
+      border: none;
     }
 
-    .generate-button {
-      border: none;
+    select {
       width: 100%;
-      min-height: 74px;
+
+      background:
+        rgba(255,255,255,0.05);
+
+      border:
+        1px solid rgba(255,255,255,0.08);
+
+      color: white;
+
+      padding: 14px 16px;
+
+      border-radius: 18px;
+
+      outline: none;
+
+      font-size: 14px;
+    }
+
+    .stats {
+      flex: 1;
+
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .stat-card {
+      padding: 18px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+
+      color: var(--muted);
+
+      margin-bottom: 10px;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 300;
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+    }
+
+    .mini {
+      margin-top: 10px;
+
+      color: var(--muted);
+
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+
+      background:
+        rgba(0,0,0,0.7);
+
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      z-index: 50;
+
+      transition:
+        opacity 0.4s ease,
+        visibility 0.4s ease;
+    }
+
+    .overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .overlay-panel {
+      width: calc(100vw - 32px);
+      max-width: 420px;
+
+      padding: 26px;
+    }
+
+    .overlay-title {
+      margin: 0;
+
+      font-size: 30px;
+      font-weight: 300;
+      letter-spacing: -0.05em;
+    }
+
+    .overlay-copy {
+      margin-top: 14px;
+
+      color: var(--muted);
+
+      line-height: 1.6;
+
+      font-size: 14px;
+    }
+
+    .init-btn {
+      margin-top: 24px;
+
+      width: 100%;
+      min-height: 70px;
+
+      border: none;
       border-radius: 999px;
+
+      color: white;
+
+      cursor: pointer;
+
       background:
         linear-gradient(
           135deg,
@@ -220,156 +327,180 @@
           rgba(255,255,255,0.08)
         );
 
-      color: white;
-      font-size: 18px;
+      font-size: 17px;
       font-weight: 500;
+
       letter-spacing: -0.02em;
-      cursor: pointer;
 
       backdrop-filter: blur(20px);
-
-      transition:
-        transform 0.2s ease,
-        background 0.2s ease,
-        opacity 0.2s ease;
     }
 
-    .generate-button:active {
-      transform: scale(0.98);
-    }
-
-    .footer-note {
-      text-align: center;
-      color: var(--muted);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
   </style>
 </head>
 
 <body>
 
-  <div class="background-glow">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
+  <div class="background">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
   </div>
 
-  <main class="shell">
+  <main class="app">
 
     <section class="hero glass">
-      <div class="eyebrow">Procedural Ecology Engine</div>
+
+      <div class="eyebrow">
+        Procedural Acoustic World Simulator
+      </div>
 
       <h1 class="title">
         Symbiote
       </h1>
 
       <div class="subtitle">
-        Infinite generative environments driven by probabilistic ecology,
-        modular DSP routing, and adaptive procedural atmospheres.
-      </div>
-    </section>
-
-    <section class="status-grid">
-
-      <div class="status-card glass">
-        <div class="status-label">
-          Current Scale
-        </div>
-
-        <div
-          class="status-value"
-          id="scaleText"
-        >
-          Dormant
-        </div>
-      </div>
-
-      <div class="status-card glass">
-        <div class="status-label">
-          Ecology State
-        </div>
-
-        <div
-          class="status-value"
-          id="ecologyText"
-        >
-          Inactive
-        </div>
+        A stochastic ecological simulation driven by behavioral rules,
+        probabilistic timing, spatial acoustics, and environmental state.
       </div>
 
     </section>
 
     <section class="controls glass">
 
-      <div class="slider-group">
+      <div class="control">
 
-        <div class="slider-row">
-          <div class="slider-label">
-            Master Volume
+        <div class="control-row">
+          <div class="control-label">
+            Rain Intensity
           </div>
 
           <div
-            class="slider-value"
-            id="masterValue"
+            class="control-value"
+            id="rainValue"
           >
-            80%
+            0.00
           </div>
         </div>
 
         <input
-          id="masterSlider"
+          id="rainSlider"
           type="range"
           min="0"
           max="1"
           step="0.01"
-          value="0.8"
+          value="0"
         />
 
       </div>
 
-      <div class="slider-group">
+      <div class="control">
 
-        <div class="slider-row">
-          <div class="slider-label">
-            Reverb Wetness
-          </div>
-
-          <div
-            class="slider-value"
-            id="reverbValue"
-          >
-            40%
+        <div class="control-row">
+          <div class="control-label">
+            Enclosure
           </div>
         </div>
 
-        <input
-          id="reverbSlider"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value="0.4"
-        />
+        <select id="enclosureSelect">
+
+          <option value="Open">
+            Open
+          </option>
+
+          <option value="Umbrella">
+            Umbrella
+          </option>
+
+          <option value="Indoor">
+            Indoor
+          </option>
+
+        </select>
 
       </div>
 
     </section>
 
-    <button
-      class="generate-button glass"
-      id="generateBtn"
-    >
-      Generate Environment
-    </button>
+    <section class="stats">
 
-    <div class="footer-note">
-      Modular Procedural Atmosphere Composition Engine
-    </div>
+      <div class="stat-card glass">
+
+        <div class="stat-label">
+          World State
+        </div>
+
+        <div
+          class="stat-value"
+          id="worldStateText"
+        >
+          Waiting...
+        </div>
+
+        <div
+          class="mini"
+          id="worldMini"
+        >
+          —
+        </div>
+
+      </div>
+
+      <div class="stat-card glass">
+
+        <div class="stat-label">
+          Scheduler
+        </div>
+
+        <div
+          class="stat-value"
+          id="schedulerText"
+        >
+          0 Behaviors
+        </div>
+
+        <div
+          class="mini"
+          id="schedulerMini"
+        >
+          —
+        </div>
+
+      </div>
+
+    </section>
 
   </main>
 
-  <script type="module" src="./factory_ui.js"></script>
+  <div
+    class="overlay"
+    id="overlay"
+  >
+
+    <div class="overlay-panel glass">
+
+      <h2 class="overlay-title">
+        Initialize Simulation
+      </h2>
+
+      <div class="overlay-copy">
+        Start the procedural ecological audio engine and unlock
+        real-time spatial acoustics.
+      </div>
+
+      <button
+        class="init-btn"
+        id="initButton"
+      >
+        Start Acoustic World
+      </button>
+
+    </div>
+
+  </div>
+
+  <script
+    type="module"
+    src="./app.js"
+  ></script>
 
 </body>
 </html>
