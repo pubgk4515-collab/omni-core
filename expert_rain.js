@@ -1,39 +1,36 @@
 /**
  * expert_rain.js
- * Compact MoE Acoustic World Model
+ * Symbiote Acoustic MoE World Simulator
  *
  * ------------------------------------------------------------
  * RAIN EXPERT
  * ------------------------------------------------------------
  *
- * Specialized procedural rainfall module.
+ * Specialized procedural droplet synthesis module.
  *
- * This expert is:
- * - self-contained
- * - runtime injectable
- * - state reactive
- * - MoE-compatible
- *
- * ------------------------------------------------------------
- * RESPONSIBILITIES
- * ------------------------------------------------------------
- *
- * - procedural droplet synthesis
- * - stochastic rainfall timing
- * - stereo spatial scatter
- * - low-Q non-resonant impacts
- * - UI card generation
- * - WorldState responsiveness
+ * Responsibilities:
+ * - procedural micro-droplet synthesis
+ * - stochastic rainfall scheduling
+ * - spatial stereo scatter
+ * - UI generation
+ * - runtime lifecycle cleanup
  *
  * ------------------------------------------------------------
- * IMPORTANT
+ * IMPORTANT DESIGN NOTES
  * ------------------------------------------------------------
  *
- * NO background hiss.
+ * NO continuous hiss.
+ * NO looping MP3.
  *
  * Only:
- * - distinct micro impacts
- * - scattered acoustic particles
+ * - procedural impacts
+ * - short transient droplets
+ * - broad low-Q resonances
+ *
+ * This avoids:
+ * - tonal ringing
+ * - "peeing into microphone" artifacts
+ * - synthetic metallic resonance
  */
 
 /* ============================================================
@@ -56,7 +53,7 @@ function random(min, max) {
 }
 
 /**
- * Clamp value.
+ * Clamp helper.
  *
  * @param {number} value
  * @param {number} min
@@ -76,7 +73,7 @@ function clamp(
 }
 
 /**
- * Safe disconnect helper.
+ * Safe disconnect.
  *
  * @param {AudioNode} node
  */
@@ -114,7 +111,7 @@ export default class RainExpert {
       crypto.randomUUID();
 
     /**
-     * DSP references.
+     * DSP refs.
      */
 
     this.context =
@@ -130,48 +127,52 @@ export default class RainExpert {
     this.running = true;
 
     /**
-     * 0.0 → calm
-     * 1.0 → storm
+     * Atmospheric pressure.
+     *
+     * 0 → calm
+     * 1 → storm
      */
 
-    this.pressure = 0;
+    this.pressure = 0.35;
 
     /**
-     * Additional UI density multiplier.
+     * User density multiplier.
      */
 
-    this.userDensity = 1;
+    this.density = 1;
 
     /**
-     * Scheduler interval.
+     * Timeout tracking.
      */
 
-    this.dropInterval =
-      240;
+    this.timeoutId = null;
 
     /**
-     * Master expert output.
+     * Active nodes for cleanup.
+     */
+
+    this.activeNodes =
+      new Set();
+
+    /**
+     * Expert output bus.
      */
 
     this.output =
       this.context.createGain();
 
     this.output.gain.value =
-      0.55;
-
-    /**
-     * Route into global bus.
-     */
+      0.72;
 
     this.output.connect(
       this.masterInputBus
     );
 
     /**
-     * Begin stochastic loop.
+     * Begin scheduler.
      */
 
-    this._loop();
+    this._schedule();
   }
 
   /* ============================================================
@@ -179,7 +180,7 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Receives state from MoERouter.
+   * Receives state updates.
    *
    * @param {object} worldState
    */
@@ -187,48 +188,26 @@ export default class RainExpert {
     worldState
   ) {
 
-    /**
-     * Atmospheric pressure drives:
-     * - density
-     * - energy
-     * - burst count
-     */
-
     this.pressure =
       clamp(
         worldState
-          .atmosphericPressure,
+          ?.atmosphericPressure ?? 0,
         0,
         1
-      );
-
-    /**
-     * Dense storms:
-     * faster droplets.
-     */
-
-    const targetInterval =
-      260 -
-      (
-        this.pressure *
-        230 *
-        this.userDensity
-      );
-
-    this.dropInterval =
-      clamp(
-        targetInterval,
-        14,
-        260
       );
   }
 
   /* ============================================================
-   * UI Card
+   * UI Template
    * ========================================================== */
 
   /**
-   * Returns expert-specific UI.
+   * Returns exact expert-card skeleton.
+   *
+   * IMPORTANT:
+   * Includes:
+   * - data-id
+   * - remove button
    *
    * @returns {string}
    */
@@ -237,78 +216,88 @@ export default class RainExpert {
     return `
       <article
         class="expert-card glass"
-        data-expert-id="${this.id}"
+        data-id="${this.id}"
       >
 
-        <div class="expert-top">
+        <div class="expert-header">
 
           <div>
 
-            <div class="expert-name">
+            <div class="expert-title">
               Rain Expert
             </div>
 
-            <div class="expert-type">
+            <div class="expert-subtitle">
               Procedural Atmosphere Module
             </div>
 
           </div>
 
-          <div class="badge">
+          <div class="expert-badge">
             Active
           </div>
 
         </div>
 
-        <div class="control">
+        <div class="expert-controls">
 
-          <div class="control-top">
+          <div class="control">
 
-            <div class="label">
-              Droplet Density
+            <div class="control-top">
+
+              <div class="label">
+                Droplet Density
+              </div>
+
+              <div
+                class="value density-value"
+              >
+                1.00
+              </div>
+
             </div>
 
-            <div
-              class="value density-value"
-            >
-              1.00
-            </div>
+            <input
+              type="range"
+              class="density-slider"
+              min="0.2"
+              max="2"
+              step="0.01"
+              value="1"
+            />
 
           </div>
 
-          <input
-            type="range"
-            min="0.2"
-            max="2"
-            step="0.01"
-            value="1"
-            class="density-slider"
-          />
-
         </div>
+
+        <button
+          class="remove-btn"
+        >
+          Remove Expert
+        </button>
 
       </article>
     `;
   }
 
   /* ============================================================
-   * UI Wiring
+   * UI Binding
    * ========================================================== */
 
   /**
-   * Binds card controls.
+   * Bind local UI controls.
    *
-   * @param {HTMLElement} element
+   * @param {HTMLElement} card
    */
-  bindUI(element) {
+  bindCardControls(card) {
 
     const slider =
-      element.querySelector(
+      card.querySelector(
         ".density-slider"
       );
 
     const value =
-      element.querySelector(
+      card.querySelector(
         ".density-value"
       );
 
@@ -323,7 +312,7 @@ export default class RainExpert {
         const v =
           Number(slider.value);
 
-        this.userDensity = v;
+        this.density = v;
 
         value.textContent =
           v.toFixed(2);
@@ -336,22 +325,19 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Spawns one procedural droplet.
+   * Creates one procedural droplet.
    *
-   * IMPORTANT:
-   * - random stereo pan
-   * - LOW Q
-   * - broad spectrum
+   * DSP FLOW:
    *
-   * Prevents:
-   * - resonant peeing sound
-   * - tonal ringing
+   * Noise Burst
+   * → Bandpass
+   * → Stereo Panner
+   * → Envelope
+   * → Master Bus
    */
   _spawnDrop() {
 
-    if (
-      this.pressure <= 0.001
-    ) {
+    if (!this.running) {
       return;
     }
 
@@ -374,20 +360,29 @@ export default class RainExpert {
     const data =
       buffer.getChannelData(0);
 
+    /**
+     * Fast decaying noise.
+     */
+
     for (
       let i = 0;
       i < 256;
       i++
     ) {
 
-      data[i] =
+      const noise =
         (
-          Math.random() * 2 - 1
-        ) *
+          Math.random() * 2
+        ) - 1;
+
+      const envelope =
         Math.exp(
           -i /
-          random(20, 55)
+          random(18, 42)
         );
+
+      data[i] =
+        noise * envelope;
     }
 
     /**
@@ -396,11 +391,11 @@ export default class RainExpert {
      * ========================================================
      */
 
-    const src =
+    const source =
       this.context
         .createBufferSource();
 
-    src.buffer =
+    source.buffer =
       buffer;
 
     /**
@@ -417,13 +412,13 @@ export default class RainExpert {
       "bandpass";
 
     /**
-     * Wide material spectrum.
+     * Broad material spectrum.
      */
 
     filter.frequency.value =
       random(
         300,
-        6000
+        6200
       );
 
     /**
@@ -434,12 +429,12 @@ export default class RainExpert {
     filter.Q.value =
       random(
         0.1,
-        1.2
+        1.5
       );
 
     /**
      * ========================================================
-     * Stereo Scatter
+     * Spatial Scatter
      * ========================================================
      */
 
@@ -461,27 +456,27 @@ export default class RainExpert {
         .createGain();
 
     /**
-     * Heavy storms:
-     * individual drops soften.
+     * Storm density:
+     * more droplets
+     * but softer individuals.
      */
 
-    const amp =
-      0.08 -
+    const volume =
+      0.12 -
       (
-        this.pressure *
-        0.04
+        this.pressure * 0.05
       );
 
     const attack =
       random(
         0.001,
-        0.003
+        0.004
       );
 
     const decay =
       random(
-        0.02,
-        0.09
+        0.03,
+        0.11
       );
 
     gain.gain.setValueAtTime(
@@ -490,7 +485,7 @@ export default class RainExpert {
     );
 
     gain.gain.linearRampToValueAtTime(
-      amp,
+      volume,
       now + attack
     );
 
@@ -505,7 +500,7 @@ export default class RainExpert {
      * ========================================================
      */
 
-    src.connect(filter);
+    source.connect(filter);
 
     filter.connect(panner);
 
@@ -516,15 +511,35 @@ export default class RainExpert {
     );
 
     /**
+     * Track nodes.
+     */
+
+    this.activeNodes.add(
+      source
+    );
+
+    this.activeNodes.add(
+      filter
+    );
+
+    this.activeNodes.add(
+      panner
+    );
+
+    this.activeNodes.add(
+      gain
+    );
+
+    /**
      * ========================================================
      * Playback
      * ========================================================
      */
 
-    src.start(now);
+    source.start(now);
 
-    src.stop(
-      now + decay + 0.03
+    source.stop(
+      now + decay + 0.05
     );
 
     /**
@@ -533,12 +548,28 @@ export default class RainExpert {
      * ========================================================
      */
 
-    src.onended = () => {
+    source.onended = () => {
 
-      safeDisconnect(src);
+      safeDisconnect(source);
       safeDisconnect(filter);
       safeDisconnect(panner);
       safeDisconnect(gain);
+
+      this.activeNodes.delete(
+        source
+      );
+
+      this.activeNodes.delete(
+        filter
+      );
+
+      this.activeNodes.delete(
+        panner
+      );
+
+      this.activeNodes.delete(
+        gain
+      );
     };
   }
 
@@ -547,24 +578,31 @@ export default class RainExpert {
    * ========================================================== */
 
   /**
-   * Stochastic droplet loop.
+   * Recursive stochastic scheduler.
    */
-  _loop() {
+  _schedule() {
 
     if (!this.running) {
       return;
     }
 
     /**
-     * Burst count scales
-     * with storm intensity.
+     * Storm intensity.
+     */
+
+    const intensity =
+      this.pressure *
+      this.density;
+
+    /**
+     * Burst count.
      */
 
     const burstCount =
       Math.floor(
         1 +
         (
-          this.pressure * 4
+          intensity * 4
         )
       );
 
@@ -574,11 +612,15 @@ export default class RainExpert {
       i++
     ) {
 
+      /**
+       * Probabilistic spawning.
+       */
+
       if (
         Math.random() <
         (
-          0.22 +
-          this.pressure
+          0.24 +
+          intensity
         )
       ) {
 
@@ -586,19 +628,65 @@ export default class RainExpert {
       }
     }
 
-    setTimeout(
-      () => this._loop(),
-      this.dropInterval
-    );
+    /**
+     * Higher pressure:
+     * faster scheduling.
+     */
+
+    const nextInterval =
+      240 -
+      (
+        intensity * 210
+      );
+
+    this.timeoutId =
+      setTimeout(
+        () => this._schedule(),
+        clamp(
+          nextInterval,
+          18,
+          240
+        )
+      );
   }
 
   /* ============================================================
    * Lifecycle
    * ========================================================== */
 
+  /**
+   * Full teardown.
+   */
   destroy() {
 
     this.running = false;
+
+    /**
+     * Stop scheduler.
+     */
+
+    if (this.timeoutId) {
+
+      clearTimeout(
+        this.timeoutId
+      );
+
+      this.timeoutId = null;
+    }
+
+    /**
+     * Disconnect active nodes.
+     */
+
+    for (
+      const node
+      of this.activeNodes
+    ) {
+
+      safeDisconnect(node);
+    }
+
+    this.activeNodes.clear();
 
     safeDisconnect(
       this.output
