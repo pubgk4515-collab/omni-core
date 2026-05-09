@@ -1,133 +1,143 @@
 /**
  * app.js
- * Procedural Acoustic World Simulator
- * Studio Integration Layer
+ * Symbiote Engine
+ * Main Integration Layer
  *
  * ------------------------------------------------------------
  * RESPONSIBILITIES
  * ------------------------------------------------------------
  *
- * - UI ↔ DSP bridge
- * - Layer management
- * - Just-In-Time audio initialization
- * - Runtime ecology control
- * - Mobile-first interaction safety
+ * - Engine bootstrap
+ * - Dynamic runtime injection
+ * - UI ↔ WorldState synchronization
+ * - Expert registration
+ * - MoE Router orchestration
  *
  * ------------------------------------------------------------
- * CRITICAL FIX
+ * CRITICAL FEATURE
  * ------------------------------------------------------------
  *
- * Prevents race condition:
+ * Dynamic Runtime Injection:
  *
- * User clicks:
- *   Add Layer -> Rain
- * BEFORE:
- *   Initialize Audio
+ * User pastes ES6 module code
+ * ↓
+ * Blob created
+ * ↓
+ * Runtime import()
+ * ↓
+ * Expert instantiated
+ * ↓
+ * Expert registered
+ * ↓
+ * UI card appended
  *
- * Previously:
- *   environment === null
+ * ------------------------------------------------------------
+ * IMPORTANT
+ * ------------------------------------------------------------
  *
- * Now:
- * - automatic async initialization
- * - safe re-entry guard
- * - singleton runtime creation
+ * Audio engine safely initializes
+ * on FIRST user interaction.
+ *
+ * Prevents:
+ * - null context
+ * - suspended mobile audio
+ * - race conditions
  */
 
 import {
   WorldState,
-  AtomicScheduler,
-  ENTITY_TYPES,
+  MoERouter,
   ENCLOSURE_TYPES,
 } from "./world_brain.js";
 
 import {
-  AcousticEnvironment,
-  SampleBank,
-  ParticleRainSynth,
-  EcologicalAudioBehavior,
-} from "./acoustic_core.js";
+  MasterAcousticBus,
+} from "./acoustic_bus.js";
 
 /* ============================================================
  * DOM
  * ========================================================== */
 
-const initBtn =
-  document.getElementById(
-    "initBtn"
+const enclosureSelect =
+  document.querySelector(
+    "select"
   );
 
-const addLayerBtn =
+const pressureSlider =
   document.getElementById(
-    "addLayerBtn"
+    "pressureSlider"
   );
 
-const layerModal =
+const pressureValue =
   document.getElementById(
-    "layerModal"
+    "pressureValue"
   );
 
-const layerContainer =
+const addExpertBtn =
   document.getElementById(
-    "layerContainer"
+    "addExpertBtn"
+  );
+
+const sheetOverlay =
+  document.getElementById(
+    "sheetOverlay"
+  );
+
+const layersContainer =
+  document.querySelector(
+    ".rack"
   );
 
 /* ============================================================
  * Runtime
  * ========================================================== */
 
-let environment = null;
+let bus = null;
 
-let sampleBank = null;
+let router = null;
 
-let scheduler = null;
+let initialized =
+  false;
 
-/**
- * Prevent duplicate initialization.
- */
-let initialized = false;
-
-/**
- * Prevent parallel async init race.
- */
-let initializing = false;
+let initializing =
+  false;
 
 /**
- * Active runtime layers.
+ * Active experts.
  */
-const layers = [];
+const experts = [];
 
 /* ============================================================
- * Initialization
+ * Engine Initialization
  * ========================================================== */
 
 /**
- * Initializes:
- * - AudioContext
- * - DSP Environment
- * - SampleBank
- * - Scheduler
+ * Safe bootstrap.
  *
- * SAFE:
- * - idempotent
- * - re-entrant protected
- * - race-safe
+ * Triggered by:
+ * - sliders
+ * - add expert
+ * - any user gesture
  */
-async function initialize() {
+async function initEngine() {
 
   /**
    * Already initialized.
    */
+
   if (initialized) {
 
     /**
-     * Mobile browsers may suspend context.
+     * Mobile browsers
+     * may suspend context.
      */
+
     if (
-      environment?.context?.state ===
+      bus?.context?.state ===
       "suspended"
     ) {
 
-      await environment.context
+      await bus.context
         .resume();
     }
 
@@ -135,14 +145,12 @@ async function initialize() {
   }
 
   /**
-   * Prevent concurrent init calls.
+   * Prevent parallel init.
    */
+
   if (initializing) {
 
-    /**
-     * Wait until initialized.
-     */
-    await waitForInitialization();
+    await waitForInit();
 
     return;
   }
@@ -153,68 +161,46 @@ async function initialize() {
 
     /**
      * ========================================================
-     * Acoustic Environment
+     * Master Bus
      * ========================================================
      */
 
-    environment =
-      new AcousticEnvironment();
+    bus =
+      new MasterAcousticBus();
 
-    /**
-     * Explicit resume required
-     * on mobile browsers.
-     */
-
-    await environment.context
-      .resume();
+    await bus.init();
 
     /**
      * ========================================================
-     * SampleBank
+     * Router
      * ========================================================
      */
 
-    sampleBank =
-      new SampleBank(
-        environment.context
-      );
+    router =
+      new MoERouter();
 
     /**
      * ========================================================
-     * Scheduler
+     * Initial State Broadcast
      * ========================================================
      */
 
-    scheduler =
-      new AtomicScheduler();
-
-    scheduler.start();
-
-    /**
-     * ========================================================
-     * Runtime State
-     * ========================================================
-     */
+    router.broadcastState(
+      WorldState.snapshot()
+    );
 
     initialized = true;
 
-    /**
-     * UI Feedback
-     */
-
-    initBtn.textContent =
-      "Audio Active";
-
-    initBtn.disabled = true;
+    console.log(
+      "[App] Symbiote Engine initialized."
+    );
 
   } catch (err) {
 
     console.error(
-      "[App] Initialization failed:",
+      "[App] Engine init failed:",
       err
     );
-
-    initialized = false;
 
   } finally {
 
@@ -223,17 +209,10 @@ async function initialize() {
 }
 
 /* ============================================================
- * Initialization Wait Helper
+ * Init Wait Helper
  * ========================================================== */
 
-/**
- * Waits for async init completion.
- *
- * Prevents:
- * - duplicate contexts
- * - parallel init race
- */
-async function waitForInitialization() {
+async function waitForInit() {
 
   while (
     initializing &&
@@ -248,290 +227,396 @@ async function waitForInitialization() {
 }
 
 /* ============================================================
- * Layer Builders
+ * Global State Controls
  * ========================================================== */
 
 /**
- * Adds procedural rain layer.
- *
- * CRITICAL:
- * Auto-initializes audio safely.
+ * Atmospheric Pressure
  */
-async function addRainLayer() {
 
-  /**
-   * --------------------------------------------------------
-   * JIT Initialization
-   * --------------------------------------------------------
-   */
+pressureSlider.addEventListener(
+  "input",
+  async (e) => {
 
-  if (!initialized) {
-    await initialize();
-  }
+    /**
+     * FIRST USER GESTURE
+     */
 
-  /**
-   * Safety fallback.
-   */
+    await initEngine();
 
-  if (!environment) {
+    const value =
+      Number(e.target.value);
 
-    console.warn(
-      "[App] Environment unavailable."
-    );
+    /**
+     * UI feedback.
+     */
 
-    return;
-  }
+    pressureValue.textContent =
+      value.toFixed(2);
 
-  /**
-   * ========================================================
-   * DSP Layer
-   * ========================================================
-   */
+    /**
+     * Update WorldState.
+     */
 
-  const rain =
-    new ParticleRainSynth(
-      environment
-    );
+    WorldState
+      .setAtmosphericPressure(
+        value
+      );
 
-  layers.push(rain);
+    /**
+     * Broadcast to experts.
+     */
 
-  /**
-   * ========================================================
-   * UI Card
-   * ========================================================
-   */
-
-  const card =
-    document.createElement("div");
-
-  card.className =
-    "layer-card glass";
-
-  card.innerHTML = `
-    <div class="layer-top">
-      <div>
-        <div class="layer-title">
-          Rain
-        </div>
-
-        <div class="layer-sub">
-          Procedural DSP · Forest
-        </div>
-      </div>
-    </div>
-
-    <div class="slider-wrap">
-      <input
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        value="0"
-      />
-    </div>
-  `;
-
-  /**
-   * ========================================================
-   * Slider
-   * ========================================================
-   */
-
-  const slider =
-    card.querySelector("input");
-
-  slider.addEventListener(
-    "input",
-    (e) => {
-
-      const value =
-        Number(e.target.value);
-
-      /**
-       * DSP update.
-       */
-
-      rain.update(value);
-
-      /**
-       * World state update.
-       */
-
-      WorldState
-        .setRainIntensity(value);
-    }
-  );
-
-  /**
-   * ========================================================
-   * Mount
-   * ========================================================
-   */
-
-  layerContainer.appendChild(
-    card
-  );
-}
-
-/**
- * Adds bird ecology layer.
- *
- * CRITICAL:
- * Auto-initializes audio safely.
- */
-async function addBirdLayer() {
-
-  /**
-   * --------------------------------------------------------
-   * JIT Initialization
-   * --------------------------------------------------------
-   */
-
-  if (!initialized) {
-    await initialize();
-  }
-
-  /**
-   * Safety fallback.
-   */
-
-  if (
-    !environment ||
-    !sampleBank ||
-    !scheduler
-  ) {
-
-    console.warn(
-      "[App] Runtime unavailable."
-    );
-
-    return;
-  }
-
-  /**
-   * ========================================================
-   * Ecology Layer
-   * ========================================================
-   */
-
-  const birds =
-    new EcologicalAudioBehavior({
-
-      entityType:
-        ENTITY_TYPES.BIRDS,
-
-      baseRate: 0.2,
-
-      sampleUrls: [
-        "./chirp.mp3",
-      ],
-
-      environment,
-      sampleBank,
-
-      baseVolume: 0.3,
-    });
-
-  scheduler.registerBehavior(
-    birds
-  );
-
-  layers.push(birds);
-
-  /**
-   * ========================================================
-   * UI Card
-   * ========================================================
-   */
-
-  const card =
-    document.createElement("div");
-
-  card.className =
-    "layer-card glass";
-
-  card.innerHTML = `
-    <div class="layer-top">
-      <div>
-        <div class="layer-title">
-          Birds
-        </div>
-
-        <div class="layer-sub">
-          Ecology · Sparrows
-        </div>
-      </div>
-    </div>
-
-    <div class="slider-wrap">
-      <input
-        type="range"
-        min="0.05"
-        max="1"
-        step="0.01"
-        value="0.2"
-      />
-    </div>
-  `;
-
-  /**
-   * ========================================================
-   * Slider
-   * ========================================================
-   */
-
-  const slider =
-    card.querySelector("input");
-
-  slider.addEventListener(
-    "input",
-    (e) => {
-
-      birds.baseRate =
-        Number(e.target.value);
-    }
-  );
-
-  /**
-   * ========================================================
-   * Mount
-   * ========================================================
-   */
-
-  layerContainer.appendChild(
-    card
-  );
-}
-
-/* ============================================================
- * Modal Logic
- * ========================================================== */
-
-/**
- * Open modal.
- */
-addLayerBtn.addEventListener(
-  "click",
-  () => {
-
-    layerModal.classList.add(
-      "open"
+    router.broadcastState(
+      WorldState.snapshot()
     );
   }
 );
 
 /**
- * Close modal on backdrop.
+ * Enclosure
  */
-layerModal.addEventListener(
+
+enclosureSelect.addEventListener(
+  "change",
+  async (e) => {
+
+    /**
+     * FIRST USER GESTURE
+     */
+
+    await initEngine();
+
+    const enclosure =
+      e.target.value;
+
+    /**
+     * Update WorldState.
+     */
+
+    WorldState.setEnclosure(
+      enclosure
+    );
+
+    /**
+     * Broadcast.
+     */
+
+    const snapshot =
+      WorldState.snapshot();
+
+    router.broadcastState(
+      snapshot
+    );
+
+    /**
+     * Update acoustics.
+     */
+
+    bus.updateAcoustics(
+      snapshot
+    );
+  }
+);
+
+/* ============================================================
+ * Add Expert
+ * ========================================================== */
+
+addExpertBtn.addEventListener(
+  "click",
+  async () => {
+
+    /**
+     * FIRST USER GESTURE
+     */
+
+    await initEngine();
+
+    /**
+     * Show existing sheet.
+     */
+
+    sheetOverlay.classList.add(
+      "open"
+    );
+
+    /**
+     * Runtime code injection.
+     */
+
+    const pastedCode =
+      prompt(
+        "Paste Expert Module Code (ES6)"
+      );
+
+    /**
+     * User cancelled.
+     */
+
+    if (
+      !pastedCode ||
+      !pastedCode.trim()
+    ) {
+
+      return;
+    }
+
+    try {
+
+      /**
+       * ======================================================
+       * Dynamic Blob Module
+       * ======================================================
+       */
+
+      const blob =
+        new Blob(
+          [pastedCode],
+          {
+            type:
+              "application/javascript",
+          }
+        );
+
+      const url =
+        URL.createObjectURL(
+          blob
+        );
+
+      /**
+       * Dynamic runtime import.
+       */
+
+      const module =
+        await import(url);
+
+      /**
+       * Cleanup blob URL.
+       */
+
+      URL.revokeObjectURL(
+        url
+      );
+
+      /**
+       * Validate default export.
+       */
+
+      if (
+        typeof module.default !==
+        "function"
+      ) {
+
+        throw new Error(
+          "Module must export default class."
+        );
+      }
+
+      /**
+       * ======================================================
+       * Expert Instantiation
+       * ======================================================
+       */
+
+      const expert =
+        new module.default(
+          bus.context,
+          bus.getInputBus()
+        );
+
+      /**
+       * ======================================================
+       * Register Expert
+       * ======================================================
+       */
+
+      router.registerExpert(
+        expert
+      );
+
+      experts.push(
+        expert
+      );
+
+      /**
+       * ======================================================
+       * Hydrate immediately
+       * ======================================================
+       */
+
+      if (
+        typeof expert
+          .onStateUpdate ===
+        "function"
+      ) {
+
+        expert.onStateUpdate(
+          WorldState.snapshot()
+        );
+      }
+
+      /**
+       * ======================================================
+       * UI Card
+       * ======================================================
+       */
+
+      appendExpertCard(
+        expert
+      );
+
+      console.log(
+        "[App] Expert injected:",
+        expert.name ||
+        expert.constructor.name
+      );
+
+    } catch (err) {
+
+      console.error(
+        "[App] Dynamic injection failed:",
+        err
+      );
+
+      alert(
+        "Failed to inject expert.\nCheck console."
+      );
+    }
+  }
+);
+
+/* ============================================================
+ * Dynamic Expert Card
+ * ========================================================== */
+
+/**
+ * Appends runtime UI card.
+ *
+ * @param {object} expert
+ */
+function appendExpertCard(
+  expert
+) {
+
+  const card =
+    document.createElement(
+      "article"
+    );
+
+  card.className =
+    "expert-card glass";
+
+  card.innerHTML = `
+    <div class="expert-top">
+
+      <div>
+
+        <div class="expert-name">
+          ${
+            expert.name ||
+            "Injected Expert"
+          }
+        </div>
+
+        <div class="expert-type">
+          Runtime Injected Module
+        </div>
+
+      </div>
+
+      <div class="badge">
+        Active
+      </div>
+
+    </div>
+
+    <div class="control">
+
+      <div class="control-top">
+
+        <div class="label">
+          Local Density
+        </div>
+
+        <div class="value">
+          1.00
+        </div>
+
+      </div>
+
+      <input
+        type="range"
+        min="0.1"
+        max="2"
+        step="0.01"
+        value="1"
+      />
+
+    </div>
+  `;
+
+  /**
+   * Optional local parameter control.
+   */
+
+  const slider =
+    card.querySelector(
+      "input"
+    );
+
+  const value =
+    card.querySelector(
+      ".value"
+    );
+
+  slider.addEventListener(
+    "input",
+    (e) => {
+
+      const v =
+        Number(e.target.value);
+
+      value.textContent =
+        v.toFixed(2);
+
+      /**
+       * Route to expert.
+       */
+
+      if (
+        typeof expert
+          .setLocalParameter ===
+        "function"
+      ) {
+
+        expert.setLocalParameter(
+          "density",
+          v
+        );
+      }
+    }
+  );
+
+  layersContainer.appendChild(
+    card
+  );
+}
+
+/* ============================================================
+ * Bottom Sheet Close
+ * ========================================================== */
+
+sheetOverlay.addEventListener(
   "click",
   (e) => {
 
     if (
-      e.target === layerModal
+      e.target ===
+      sheetOverlay
     ) {
 
-      layerModal.classList.remove(
+      sheetOverlay.classList.remove(
         "open"
       );
     }
@@ -539,122 +624,16 @@ layerModal.addEventListener(
 );
 
 /* ============================================================
- * Layer Selection
+ * Initial Defaults
  * ========================================================== */
-
-document
-  .querySelectorAll("[data-layer]")
-  .forEach((btn) => {
-
-    btn.addEventListener(
-      "click",
-      async () => {
-
-        const type =
-          btn.dataset.layer;
-
-        /**
-         * ----------------------------------------------------
-         * Async layer creation.
-         * ----------------------------------------------------
-         */
-
-        switch (type) {
-
-          case "rain":
-
-            await addRainLayer();
-
-            break;
-
-          case "birds":
-
-            await addBirdLayer();
-
-            break;
-
-          case "typing":
-
-            /**
-             * Reserved future layer.
-             */
-
-            console.log(
-              "[App] Typing layer not implemented yet."
-            );
-
-            break;
-        }
-
-        /**
-         * Close modal.
-         */
-
-        layerModal.classList.remove(
-          "open"
-        );
-      }
-    );
-  });
-
-/* ============================================================
- * Manual Initialize Button
- * ========================================================== */
-
-initBtn.addEventListener(
-  "click",
-  async () => {
-
-    try {
-
-      await initialize();
-
-    } catch (err) {
-
-      console.error(
-        "[App] Init button failed:",
-        err
-      );
-    }
-  }
-);
-
-/* ============================================================
- * Acoustics Frame Loop
- * ========================================================== */
-
-/**
- * Continuous acoustics update loop.
- *
- * Handles:
- * - enclosure filtering
- * - future environmental morphing
- * - global DSP state
- */
-function frame() {
-
-  if (environment) {
-
-    environment
-      .updateAcoustics();
-  }
-
-  requestAnimationFrame(
-    frame
-  );
-}
-
-/**
- * Start loop immediately.
- */
-frame();
-
-/* ============================================================
- * Default World State
- * ========================================================== */
-
-WorldState.setRainIntensity(0);
 
 WorldState.setEnclosure(
   ENCLOSURE_TYPES.OPEN
 );
+
+WorldState
+  .setAtmosphericPressure(
+    Number(
+      pressureSlider.value
+    )
+  );
