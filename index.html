@@ -1,163 +1,375 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>OmniEngine Factory</title>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+  />
+
+  <title>Symbiote Atmosphere Factory</title>
+
   <style>
     :root {
-      --bg-color: #030303;
-      --glass-bg: rgba(20, 20, 22, 0.65);
-      --glass-border: rgba(255, 255, 255, 0.08);
-      --accent: #e0e0e0;
-      --text-muted: #7a7a7a;
+      --bg: #030303;
+      --panel: rgba(255,255,255,0.05);
+      --border: rgba(255,255,255,0.08);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.45);
+      --accent: rgba(255,255,255,0.18);
+      --radius: 28px;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        sans-serif;
+    }
 
     body {
-      background-color: var(--bg-color);
-      color: var(--accent);
-      height: 100dvh;
+      min-height: 100dvh;
       display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      overflow: hidden;
-    }
-
-    /* Symbiote Organic Visuals at the top */
-    .visual-space {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
       position: relative;
     }
 
-    .greeting {
-      font-size: 1.2rem;
-      font-weight: 300;
-      letter-spacing: 2px;
-      color: var(--text-muted);
+    .background-glow {
       position: absolute;
-      top: 40px;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
     }
 
-    .status-ring {
-      width: 150px;
-      height: 150px;
-      border-radius: 50%;
-      border: 1px solid var(--glass-border);
-      box-shadow: 0 0 40px rgba(255, 255, 255, 0.02);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 200;
-      letter-spacing: 4px;
-      transition: all 0.8s ease;
+    .orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(90px);
+      opacity: 0.18;
     }
 
-    /* One UI 8.5 Ergonomics - Everything in the bottom 35% */
-    .control-deck {
-      background: var(--glass-bg);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-top: 1px solid var(--glass-border);
-      padding: 24px 20px 40px 20px;
-      border-radius: 30px 30px 0 0;
+    .orb-1 {
+      width: 220px;
+      height: 220px;
+      background: #3b82f6;
+      top: -40px;
+      left: -40px;
+    }
+
+    .orb-2 {
+      width: 280px;
+      height: 280px;
+      background: #8b5cf6;
+      bottom: -80px;
+      right: -40px;
+    }
+
+    .shell {
+      width: calc(100vw - 28px);
+      max-width: 460px;
+      height: calc(100dvh - 28px);
+      padding: 18px;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      justify-content: space-between;
+      gap: 18px;
+      z-index: 2;
+    }
+
+    .glass {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: var(--radius);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.02),
+        0 10px 40px rgba(0,0,0,0.35);
+    }
+
+    .hero {
+      padding: 24px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .title {
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 300;
+      letter-spacing: -0.04em;
+      margin: 0;
+    }
+
+    .subtitle {
+      margin-top: 14px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+      font-weight: 400;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .status-card {
+      padding: 18px;
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .status-label {
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .status-value {
+      font-size: 26px;
+      line-height: 1;
+      font-weight: 300;
+      letter-spacing: -0.03em;
+    }
+
+    .controls {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
     }
 
     .slider-group {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 10px;
     }
 
-    .slider-header {
+    .slider-row {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      font-size: 0.75rem;
-      font-weight: 500;
-      letter-spacing: 1px;
-      color: var(--text-muted);
-      text-transform: uppercase;
     }
 
-    input[type=range] {
-      -webkit-appearance: none;
-      width: 100%;
-      background: transparent;
+    .slider-label {
+      font-size: 13px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
     }
 
-    input[type=range]::-webkit-slider-runnable-track {
+    .slider-value {
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    input[type="range"] {
       width: 100%;
+      appearance: none;
       height: 4px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 2px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      outline: none;
     }
 
-    input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      height: 20px;
-      width: 20px;
-      border-radius: 50%;
-      background: var(--accent);
-      margin-top: -8px;
-      box-shadow: 0 0 10px rgba(255,255,255,0.2);
-    }
-
-    /* The Factory Button */
-    .btn-generate {
-      background: var(--accent);
-      color: #000;
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: white;
       border: none;
-      border-radius: 14px;
-      padding: 18px;
-      font-size: 0.9rem;
-      font-weight: 600;
-      letter-spacing: 1.5px;
-      text-transform: uppercase;
-      margin-top: 10px;
-      transition: transform 0.1s ease;
+      cursor: pointer;
     }
-    
-    .btn-generate:active { transform: scale(0.97); }
 
-    #vibeLabel {
+    .generate-button {
+      border: none;
+      width: 100%;
+      min-height: 74px;
+      border-radius: 999px;
+      background:
+        linear-gradient(
+          135deg,
+          rgba(255,255,255,0.16),
+          rgba(255,255,255,0.08)
+        );
+
+      color: white;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      cursor: pointer;
+
+      backdrop-filter: blur(20px);
+
+      transition:
+        transform 0.2s ease,
+        background 0.2s ease,
+        opacity 0.2s ease;
+    }
+
+    .generate-button:active {
+      transform: scale(0.98);
+    }
+
+    .footer-note {
       text-align: center;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      min-height: 15px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
   </style>
 </head>
+
 <body>
 
-  <div class="visual-space">
-    <div class="greeting">Hi Ameer</div>
-    <div class="status-ring" id="playBtn">BOOT</div>
+  <div class="background-glow">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
   </div>
 
-  <div class="control-deck">
-    <div id="vibeLabel">AWAITING GENERATION...</div>
-    
-    <div class="slider-group">
-      <div class="slider-header"><span>Drone Core</span><span id="val-drone">0%</span></div>
-      <input type="range" id="droneSlider" min="0" max="1" step="0.01" value="0">
+  <main class="shell">
+
+    <section class="hero glass">
+      <div class="eyebrow">Procedural Ecology Engine</div>
+
+      <h1 class="title">
+        Symbiote
+      </h1>
+
+      <div class="subtitle">
+        Infinite generative environments driven by probabilistic ecology,
+        modular DSP routing, and adaptive procedural atmospheres.
+      </div>
+    </section>
+
+    <section class="status-grid">
+
+      <div class="status-card glass">
+        <div class="status-label">
+          Current Scale
+        </div>
+
+        <div
+          class="status-value"
+          id="scaleText"
+        >
+          Dormant
+        </div>
+      </div>
+
+      <div class="status-card glass">
+        <div class="status-label">
+          Ecology State
+        </div>
+
+        <div
+          class="status-value"
+          id="ecologyText"
+        >
+          Inactive
+        </div>
+      </div>
+
+    </section>
+
+    <section class="controls glass">
+
+      <div class="slider-group">
+
+        <div class="slider-row">
+          <div class="slider-label">
+            Master Volume
+          </div>
+
+          <div
+            class="slider-value"
+            id="masterValue"
+          >
+            80%
+          </div>
+        </div>
+
+        <input
+          id="masterSlider"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value="0.8"
+        />
+
+      </div>
+
+      <div class="slider-group">
+
+        <div class="slider-row">
+          <div class="slider-label">
+            Reverb Wetness
+          </div>
+
+          <div
+            class="slider-value"
+            id="reverbValue"
+          >
+            40%
+          </div>
+        </div>
+
+        <input
+          id="reverbSlider"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value="0.4"
+        />
+
+      </div>
+
+    </section>
+
+    <button
+      class="generate-button glass"
+      id="generateBtn"
+    >
+      Generate Environment
+    </button>
+
+    <div class="footer-note">
+      Modular Procedural Atmosphere Composition Engine
     </div>
 
-    <div class="slider-group">
-      <div class="slider-header"><span>Wind Dynamics</span><span id="val-wind">0%</span></div>
-      <input type="range" id="windSlider" min="0" max="1" step="0.01" value="0">
-    </div>
+  </main>
 
-    <button class="btn-generate" id="generateBtn">Generate Vibe</button>
-  </div>
+  <script type="module" src="./factory_ui.js"></script>
 
-  <script src="omni_core.js" type="module"></script>
 </body>
 </html>
