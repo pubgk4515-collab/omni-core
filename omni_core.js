@@ -1,175 +1,181 @@
-import { ExpertModuleTemplate } from './expert_template.js';
-import { ExpertWindModule } from './expert_wind.js';
+// =====================================================================
+// OmniEngine Auto-Director Bridge
+// =====================================================================
 
-// ------------------------- AudioWorklet Processor (Blob) -------------------------
-function createWorkletCode() {
-  return `
-    class OmniProcessor extends AudioWorkletProcessor {
-      constructor(options) {
+const WORKLET_CODE = `
+class OmniProcessor extends AudioWorkletProcessor {
+    constructor(options) {
         super();
         this.wasmReady = false;
-        this.engine = 0;
-        this.active = true;
-
+        this.engine = null;
+        
         const wasmBinary = options.processorOptions?.wasmBinary;
         if (!wasmBinary) return;
 
         WebAssembly.instantiate(wasmBinary, {
-          env: {
-            memory: new WebAssembly.Memory({ initial: 256, maximum: 512 }),
-            emscripten_resize_heap: () => {},
-            abort: () => {}
-          }
+            env: {
+                memory: new WebAssembly.Memory({ initial: 256, maximum: 512 }),
+                emscripten_resize_heap: () => {},
+                abort: () => {}
+            }
         }).then(({ instance }) => {
-          this.wasmExports = instance.exports;
-          // Create engine with default type 0; real type is set via message
-          this.engine = this.wasmExports.createEngine(sampleRate, 0);
-          this.wasmReady = true;
+            this.wasmExports = instance.exports;
+            // Create the master engine (Type 0 handles the multi-routing now)
+            this.engine = this.wasmExports.createEngine(sampleRate, 0);
+            this.wasmReady = true;
+            this.port.postMessage({ type: 'ready' });
         });
 
         this.port.onmessage = (e) => this.handleMessage(e.data);
-      }
+    }
 
-      handleMessage(data) {
-        if (!this.wasmReady) return;
-        const exp = this.wasmExports;
-        if (data.type === 'init' && data.engineType != null) {
-          // Switch engine type (will re‑init inside)
-          exp.setParameter(this.engine, 5, data.engineType);
-          // Actually our C++ setParameter for ENGINE_TYPE does nothing; we call create again?
-          // Better: destroy and recreate with correct type.
-          exp.destroyEngine(this.engine);
-          this.engine = exp.createEngine(sampleRate, data.engineType);
-        } else if (data.type === 'setParams' && Array.isArray(data.values)) {
-          for (const [id, val] of data.values) {
-            exp.setParameter(this.engine, id, val);
-          }
-        } else if (data.type === 'setActive') {
-          this.active = !!data.active;
+    handleMessage(data) {
+        if (!this.wasmReady || !this.engine) return;
+        
+        if (data.type === 'setParam') {
+            this.wasmExports.setParameter(this.engine, data.id, data.value);
         }
-      }
+    }
 
-      process(inputs, outputs, parameters) {
-        const out = outputs[0];
+    process(inputs, outputs, parameters) {
+        const out = outputs;
         if (!out || !this.wasmReady) return true;
-        const channel = out[0];
+        
+        const channel = out;
         const frames = channel.length;
-        if (this.active) {
-          const ptr = this.wasmExports.processAudio(this.engine, frames);
-          if (ptr) {
+        
+        const ptr = this.wasmExports.processAudio(this.engine, frames);
+        if (ptr) {
             const mem = this.wasmExports.memory;
             const view = new Float32Array(mem.buffer, ptr, frames);
             channel.set(view);
-          } else {
-            channel.fill(0);
-          }
+            // Copy to right channel for stereo spread
+            if (out) out.set(view); 
         } else {
-          channel.fill(0);
+            channel.fill(0);
         }
         return true;
-      }
     }
-    registerProcessor('omni-dsp-processor', OmniProcessor);
-  `;
+}
+registerProcessor('omni-processor', OmniProcessor);
+`;
+
+class AutoDirector {
+    constructor() {
+        this.ctx = null;
+        this.node = null;
+        this.isBooted = false;
+        
+        // UI Elements
+        this.playBtn = document.getElementById('playBtn');
+        this.genBtn = document.getElementById('generateBtn');
+        this.droneSlider = document.getElementById('droneSlider');
+        this.windSlider = document.getElementById('windSlider');
+        this.vibeLabel = document.getElementById('vibeLabel');
+
+        this.scales = ["Cinematic Space", "Himalayan Zen", "Cyberpunk Dystopia"];
+        
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        this.playBtn.onclick = () => this.bootEngine();
+        this.genBtn.onclick = () => this.generateUniqueVibe();
+        
+        this.droneSlider.oninput = (e) => this.updateManual(0, e.target.value, 'val-drone');
+        this.windSlider.oninput = (e) => this.updateManual(1, e.target.value, 'val-wind');
+    }
+
+    async bootEngine() {
+        if (this.isBooted) {
+            if (this.ctx.state === 'suspended') {
+                this.ctx.resume();
+                this.playBtn.innerText = "ACTIVE";
+                this.playBtn.style.boxShadow = "0 0 40px rgba(255,255,255,0.2)";
+            } else {
+                this.ctx.suspend();
+                this.playBtn.innerText = "PAUSED";
+                this.playBtn.style.boxShadow = "none";
+            }
+            return;
+        }
+
+        this.playBtn.innerText = "LOADING...";
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        try {
+            const resp = await fetch('dsp_engine.wasm');
+            const wasmBuffer = await resp.arrayBuffer();
+
+            const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+            await this.ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+
+            this.node = new AudioWorkletNode(this.ctx, 'omni-processor', {
+                processorOptions: { wasmBinary: wasmBuffer }
+            });
+            this.node.connect(this.ctx.destination);
+
+            this.isBooted = true;
+            this.playBtn.innerText = "ACTIVE";
+            this.playBtn.style.boxShadow = "0 0 40px rgba(255,255,255,0.2)";
+            
+            // Trigger first generation
+            this.generateUniqueVibe();
+            
+        } catch (e) {
+            this.playBtn.innerText = "ERROR";
+            console.error(e);
+        }
+    }
+
+    updateManual(type, value, labelId) {
+        document.getElementById(labelId).innerText = Math.round(value * 100) + '%';
+        if (!this.node) return;
+        
+        if (type === 0) {
+            // Mapping Drone Intensity to Saturation/Filter trick to kill the 'refrigerator' hum
+            this.node.port.postMessage({ type: 'setParam', id: 3, value: parseFloat(value) }); // Saturation
+        } else if (type === 1) {
+            this.node.port.postMessage({ type: 'setParam', id: 4, value: parseFloat(value) }); // Wind Intensity
+            this.node.port.postMessage({ type: 'setParam', id: 5, value: 1 }); // Ensure wind engine triggers
+        }
+    }
+
+    generateUniqueVibe() {
+        if (!this.isBooted) {
+            this.bootEngine().then(() => this.executeGeneration());
+        } else {
+            this.executeGeneration();
+        }
+    }
+
+    executeGeneration() {
+        // 1. Pick a mathematical mood (SCALE_ID: 0, 1, or 2)
+        const scaleId = Math.floor(Math.random() * 3);
+        const scaleName = this.scales[scaleId];
+
+        // 2. Randomize Intensities
+        const droneVal = (Math.random() * 0.7 + 0.3).toFixed(2); // Always keep some drone
+        const windVal = (Math.random() * 0.8).toFixed(2);
+        const verbVal = (Math.random() * 0.4 + 0.2).toFixed(2); // Reverb between 0.2 and 0.6
+
+        // 3. Update UI
+        this.droneSlider.value = droneVal;
+        this.windSlider.value = windVal;
+        document.getElementById('val-drone').innerText = Math.round(droneVal * 100) + '%';
+        document.getElementById('val-wind').innerText = Math.round(windVal * 100) + '%';
+        this.vibeLabel.innerText = `GENERATED: ${scaleName.toUpperCase()}`;
+
+        // 4. Dispatch to C++ Wasm Worker
+        this.node.port.postMessage({ type: 'setParam', id: 6, value: scaleId }); // Set Scale
+        this.node.port.postMessage({ type: 'setParam', id: 1, value: parseFloat(verbVal) }); // Set Reverb Mix
+        
+        // Push slider values
+        this.updateManual(0, droneVal, 'val-drone');
+        this.updateManual(1, windVal, 'val-wind');
+    }
 }
 
-// ------------------------- OmniCore (Motherboard) -------------------------
-class OmniCore {
-  constructor() {
-    this.audioCtx = null;
-    this.wasmBuffer = null;
-    this.modules = [];
-    this.tabsContainer = document.getElementById('tabsContainer');
-    this.autoButton = document.getElementById('autoButton');
-  }
-
-  async boot() {
-    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    // Load Wasm binary once
-    const resp = await fetch('dsp_engine.wasm');
-    this.wasmBuffer = await resp.arrayBuffer();
-
-    // Register processor
-    const blob = new Blob([createWorkletCode()], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    await this.audioCtx.audioWorklet.addModule(url);
-
-    // Create modules – Drone (type 0) and Wind (type 1)
-    const drone = new ExpertModuleTemplate();
-    const wind = new ExpertWindModule();
-    this._addModule('Drone', drone, 0);
-    this._addModule('Wind', wind, 1);
-
-    this.autoButton.onclick = () => this._autoDirector();
-  }
-
-  _addModule(name, expertInstance, engineType) {
-    const node = new AudioWorkletNode(this.audioCtx, 'omni-dsp-processor', {
-      processorOptions: { wasmBinary: this.wasmBuffer }
-    });
-    const id = `${name}_${engineType}`;
-    expertInstance.init(id, this.audioCtx, node);
-    expertInstance.toggle(false);
-    this.modules.push({ instance: expertInstance, id, name });
-
-    // Build UI tab (same structure as before)
-    const card = document.createElement('div');
-    card.className = 'tab-card';
-    const nameLbl = document.createElement('div');
-    nameLbl.className = 'module-name';
-    nameLbl.textContent = name;
-    const sliderWrap = document.createElement('div');
-    sliderWrap.className = 'slider-container';
-    const slider = document.createElement('input');
-    slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = 0.01; slider.value = 0.5;
-    const valSpan = document.createElement('span'); valSpan.style.color = '#ccc'; valSpan.textContent = '0.50';
-    slider.oninput = () => {
-      valSpan.textContent = parseFloat(slider.value).toFixed(2);
-      expertInstance.setSlider(parseFloat(slider.value));
-    };
-    const btn = document.createElement('button');
-    btn.className = 'play-pause-btn'; btn.textContent = '▶';
-    btn.onclick = () => {
-      const active = btn.classList.toggle('active');
-      btn.textContent = active ? '⏸' : '▶';
-      expertInstance.toggle(active);
-    };
-    sliderWrap.appendChild(slider); sliderWrap.appendChild(valSpan);
-    card.appendChild(nameLbl); card.appendChild(sliderWrap); card.appendChild(btn);
-    this.tabsContainer.appendChild(card);
-  }
-
-  _autoDirector() {
-    // Randomise 1‑2 modules (non‑chaotic, weighted)
-    const count = Math.floor(Math.random() * 2) + 1;
-    const indices = [];
-    while (indices.length < count) {
-      const i = Math.floor(Math.random() * this.modules.length);
-      if (!indices.includes(i)) indices.push(i);
-    }
-    indices.forEach(i => {
-      const modObj = this.modules[i];
-      const mod = modObj.instance;
-      if (Math.random() < 0.5) {
-        mod.toggle(true);
-        const card = [...this.tabsContainer.children][i];
-        card.querySelector('.play-pause-btn').classList.add('active');
-        card.querySelector('.play-pause-btn').textContent = '⏸';
-      }
-      const val = 0.1 + Math.random() * 0.8;
-      mod.setSlider(val);
-      const slider = [...this.tabsContainer.children][i].querySelector('input[type=range]');
-      slider.value = val;
-      slider.nextElementSibling.textContent = val.toFixed(2);
-    });
-  }
-}
-
-document.addEventListener('DOMContentLoaded', async () => {
-  const core = new OmniCore();
-  document.body.addEventListener('click', () => {
-    if (core.audioCtx?.state === 'suspended') core.audioCtx.resume();
-  }, { once: true });
-  await core.boot();
+document.addEventListener('DOMContentLoaded', () => {
+    new AutoDirector();
 });
