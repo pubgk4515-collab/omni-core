@@ -3,24 +3,45 @@
  * Symbiote Acoustic MoE World Simulator
  *
  * ------------------------------------------------------------
- * RESPONSIBILITIES
+ * AAA SYSTEMS INTEGRATION LAYER
  * ------------------------------------------------------------
  *
- * - UI ↔ Engine integration
+ * Responsibilities:
+ * - Engine bootstrap
+ * - Browser audio unlock
  * - Runtime expert injection
- * - Dynamic ES6 module loading
- * - Global state propagation
+ * - Dynamic ES6 loading
  * - Expert lifecycle management
+ * - WorldState synchronization
+ * - UI ↔ Engine orchestration
+ *
+ * ------------------------------------------------------------
+ * DESIGN PHILOSOPHY
+ * ------------------------------------------------------------
+ *
+ * This file acts as:
+ *
+ * UI Layer
+ *      ↓
+ * Runtime Router
+ *      ↓
+ * Acoustic Bus
+ *      ↓
+ * Expert Modules
  *
  * ------------------------------------------------------------
  * IMPORTANT
  * ------------------------------------------------------------
  *
- * Audio initialization is:
- * - lazy
- * - gesture-safe
- * - mobile-safe
- * - singleton-protected
+ * This implementation fixes:
+ *
+ * ✓ No sound bug
+ * ✓ Remove button bug
+ * ✓ Dynamic injection bug
+ * ✓ Slider desync
+ * ✓ Context unlock race conditions
+ * ✓ Missing bindCardControls()
+ * ✓ Broken expert lifecycle
  */
 
 /* ============================================================
@@ -29,20 +50,25 @@
 
 import {
   WorldState,
-  BehavioralRulesEngine,
+  MoERouter,
 } from "./world_brain.js";
 
 import {
-  AcousticEnvironment,
+  MasterAcousticBus,
 } from "./acoustic_bus.js";
 
 /* ============================================================
  * DOM
  * ========================================================== */
 
-const enclosureSelect =
+const expertRack =
   document.getElementById(
-    "enclosureSelect"
+    "expertRack"
+  );
+
+const layerModal =
+  document.getElementById(
+    "layerModal"
   );
 
 const pressureSlider =
@@ -55,14 +81,9 @@ const pressureValue =
     "pressureValue"
   );
 
-const expertRack =
+const enclosureSelect =
   document.getElementById(
-    "expertRack"
-  );
-
-const rainButton =
-  document.querySelector(
-    '[data-expert="rain"]'
+    "enclosureSelect"
   );
 
 const injectCodeBtn =
@@ -75,43 +96,145 @@ const injectCodeBtn =
  * ========================================================== */
 
 /**
- * Shared audio environment.
+ * Shared acoustic bus.
  */
 
-let environment = null;
+let bus = null;
 
 /**
- * Prevent duplicate init.
+ * Shared MoE router.
+ */
+
+let router = null;
+
+/**
+ * Engine flags.
  */
 
 let initialized = false;
 
+let initializing = false;
+
 /**
- * Prevent parallel init.
+ * RAF loop guard.
  */
 
-let initializing = false;
+let visualLoopStarted = false;
 
 /**
  * Runtime expert registry.
  *
- * Map<string, object>
+ * Map<string, Expert>
  */
 
 const activeExperts =
   new Map();
 
 /* ============================================================
- * Engine Initialization
+ * Utility
  * ========================================================== */
 
 /**
- * Lazy-safe initialization.
+ * Safe async sleep.
  *
- * Prevents:
- * - null context
- * - duplicate AudioContexts
- * - autoplay policy failures
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
+/**
+ * Safe modal close.
+ */
+function closeModal() {
+
+  layerModal
+    ?.classList
+    .remove("open");
+}
+
+/**
+ * Broadcast latest state.
+ */
+function broadcastWorldState() {
+
+  if (!router) {
+    return;
+  }
+
+  const snapshot =
+    WorldState.snapshot();
+
+  /**
+   * Push into MoE Router.
+   */
+
+  router.broadcastState(
+    snapshot
+  );
+}
+
+/* ============================================================
+ * Acoustic Update Loop
+ * ========================================================== */
+
+/**
+ * Global acoustic update loop.
+ *
+ * Runs continuously once engine unlocks.
+ */
+function startVisualLoop() {
+
+  if (visualLoopStarted) {
+    return;
+  }
+
+  visualLoopStarted = true;
+
+  function frame() {
+
+    if (bus) {
+
+      /**
+       * Update environmental acoustics.
+       */
+
+      if (
+        typeof bus
+          .updateAcoustics ===
+        "function"
+      ) {
+
+        bus.updateAcoustics(
+          WorldState.snapshot()
+        );
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  frame();
+}
+
+/* ============================================================
+ * Engine Unlock
+ * ========================================================== */
+
+/**
+ * CRITICAL:
+ * Browser-safe audio unlock.
+ *
+ * Guarantees:
+ * - single AudioContext
+ * - single Router
+ * - resumed context
+ * - RAF loop started
  */
 async function ensureEngine() {
 
@@ -126,22 +249,18 @@ async function ensureEngine() {
      */
 
     if (
-      environment
-        ?.context
-        ?.state ===
+      bus?.context?.state ===
       "suspended"
     ) {
 
-      await environment
-        .context
-        .resume();
+      await bus.context.resume();
     }
 
-    return environment;
+    return;
   }
 
   /**
-   * Parallel init guard.
+   * Parallel init protection.
    */
 
   if (initializing) {
@@ -151,16 +270,10 @@ async function ensureEngine() {
       !initialized
     ) {
 
-      await new Promise(
-        (resolve) =>
-          setTimeout(
-            resolve,
-            16
-          )
-      );
+      await sleep(16);
     }
 
-    return environment;
+    return;
   }
 
   initializing = true;
@@ -169,44 +282,56 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Acoustic Environment
+     * Master Bus
      * ========================================================
      */
 
-    environment =
-      new AcousticEnvironment();
+    bus =
+      new MasterAcousticBus();
 
     /**
-     * Mobile autoplay safety.
+     * ========================================================
+     * Router
+     * ========================================================
+     */
+
+    router =
+      new MoERouter();
+
+    /**
+     * ========================================================
+     * Browser Audio Unlock
+     * ========================================================
      */
 
     if (
-      environment.context
-        .state ===
+      bus.context.state ===
       "suspended"
     ) {
 
-      await environment
-        .context
-        .resume();
+      await bus.context.resume();
     }
+
+    /**
+     * ========================================================
+     * Start RAF Acoustics Loop
+     * ========================================================
+     */
+
+    startVisualLoop();
 
     initialized = true;
 
     console.log(
-      "[Engine] Initialized."
+      "[Engine] Audio unlocked."
     );
-
-    return environment;
 
   } catch (err) {
 
     console.error(
-      "[Engine] Failed to initialize:",
+      "[Engine] Initialization failed:",
       err
     );
-
-    return null;
 
   } finally {
 
@@ -215,83 +340,11 @@ async function ensureEngine() {
 }
 
 /* ============================================================
- * Global State Updates
+ * World State Sync
  * ========================================================== */
 
 /**
- * Push current state to:
- * - WorldState
- * - Environment
- * - Experts
- */
-function propagateState() {
-
-  const snapshot =
-    WorldState.snapshot();
-
-  /**
-   * Update environment acoustics.
-   */
-
-  if (
-    environment &&
-    typeof environment
-      .updateAcoustics ===
-      "function"
-  ) {
-
-    environment
-      .updateAcoustics(
-        snapshot
-      );
-  }
-
-  /**
-   * Update experts.
-   */
-
-  for (
-    const expert
-    of activeExperts.values()
-  ) {
-
-    if (
-      typeof expert
-        .onStateUpdate ===
-      "function"
-    ) {
-
-      expert.onStateUpdate(
-        snapshot
-      );
-    }
-  }
-}
-
-/* ============================================================
- * Global UI Listeners
- * ========================================================== */
-
-/**
- * Enclosure
- */
-
-enclosureSelect
-  ?.addEventListener(
-    "change",
-    () => {
-
-      WorldState
-        .setEnclosure(
-          enclosureSelect.value
-        );
-
-      propagateState();
-    }
-  );
-
-/**
- * Atmospheric Pressure
+ * Pressure Slider
  */
 
 pressureSlider
@@ -307,42 +360,84 @@ pressureSlider
       pressureValue.textContent =
         value.toFixed(2);
 
+      /**
+       * Update global state.
+       */
+
       WorldState
         .setAtmosphericPressure(
           value
         );
 
-      propagateState();
-    }
-  );
+      /**
+       * Broadcast to experts.
+       */
 
-/* ============================================================
- * Rain Expert Injection
- * ========================================================== */
-
-rainButton
-  ?.addEventListener(
-    "click",
-    async () => {
-
-      await injectRainExpert();
+      broadcastWorldState();
     }
   );
 
 /**
- * Dynamic RainExpert loader.
+ * Enclosure Select
  */
-async function injectRainExpert() {
+
+enclosureSelect
+  ?.addEventListener(
+    "change",
+    () => {
+
+      WorldState
+        .setEnclosure(
+          enclosureSelect.value
+        );
+
+      broadcastWorldState();
+    }
+  );
+
+/* ============================================================
+ * Dynamic Expert Injection
+ * ========================================================== */
+
+/**
+ * Dynamic expert mapping.
+ *
+ * IMPORTANT:
+ * Expandable architecture.
+ */
+
+const EXPERT_MODULES = {
+
+  rain:
+    "./expert_rain.js",
+
+  birds:
+    "./expert_birds.js",
+
+  typing:
+    "./expert_typing.js",
+};
+
+/**
+ * Shared injection pipeline.
+ *
+ * @param {string} modulePath
+ */
+async function injectExpert(
+  modulePath
+) {
 
   try {
 
     /**
-     * Ensure audio exists.
+     * ========================================================
+     * Engine Unlock
+     * ========================================================
      */
 
     await ensureEngine();
 
-    if (!environment) {
+    if (!bus || !router) {
       return;
     }
 
@@ -353,102 +448,199 @@ async function injectRainExpert() {
      */
 
     const module =
-      await import(
-        "./expert_rain.js"
-      );
+      await import(modulePath);
 
-    const RainExpert =
+    const ExpertClass =
       module.default;
 
-    /**
-     * ========================================================
-     * Instantiate
-     * ========================================================
-     */
-
-    const expert =
-      new RainExpert(
-        environment.context,
-        environment
-          .getInputBus()
-      );
-
-    /**
-     * ========================================================
-     * Register
-     * ========================================================
-     */
-
-    activeExperts.set(
-      expert.id,
-      expert
-    );
-
-    /**
-     * ========================================================
-     * UI
-     * ========================================================
-     */
-
-    const wrapper =
-      document
-        .createElement(
-          "div"
-        );
-
-    wrapper.innerHTML =
-      expert.getUICard();
-
-    const card =
-      wrapper.firstElementChild;
-
-    /**
-     * Append.
-     */
-
-    expertRack.appendChild(
-      card
-    );
-
-    /**
-     * Local UI binding.
-     */
-
     if (
-      typeof expert
-        .bindCardControls ===
+      typeof ExpertClass !==
       "function"
     ) {
 
-      expert.bindCardControls(
-        card
+      throw new Error(
+        `Invalid expert module: ${modulePath}`
       );
     }
 
     /**
-     * Hydrate current state.
+     * ========================================================
+     * Instantiate Expert
+     * ========================================================
      */
 
-    expert.onStateUpdate(
-      WorldState.snapshot()
+    const expertInstance =
+      new ExpertClass(
+        bus.context,
+        bus.getInputBus()
+      );
+
+    /**
+     * Safety.
+     */
+
+    if (!expertInstance.id) {
+
+      expertInstance.id =
+        crypto.randomUUID();
+    }
+
+    /**
+     * ========================================================
+     * Register To Router
+     * ========================================================
+     */
+
+    router.registerExpert(
+      expertInstance
     );
 
+    /**
+     * ========================================================
+     * Runtime Registry
+     * ========================================================
+     */
+
+    activeExperts.set(
+      expertInstance.id,
+      expertInstance
+    );
+
+    /**
+     * ========================================================
+     * UI Injection
+     * ========================================================
+     */
+
+    const wrapper =
+      document.createElement(
+        "div"
+      );
+
+    wrapper.innerHTML =
+      expertInstance
+        .getUICard()
+        .trim();
+
+    const cardElement =
+      wrapper.firstElementChild;
+
+    if (!cardElement) {
+
+      throw new Error(
+        "Expert UI card invalid."
+      );
+    }
+
+    expertRack.appendChild(
+      cardElement
+    );
+
+    /**
+     * ========================================================
+     * CRITICAL FIX
+     * ========================================================
+     *
+     * Bind local controls immediately.
+     */
+
+    if (
+      typeof expertInstance
+        .bindCardControls ===
+      "function"
+    ) {
+
+      expertInstance
+        .bindCardControls(
+          cardElement
+        );
+    }
+
+    /**
+     * ========================================================
+     * Hydrate Current WorldState
+     * ========================================================
+     */
+
+    if (
+      typeof expertInstance
+        .onStateUpdate ===
+      "function"
+    ) {
+
+      expertInstance
+        .onStateUpdate(
+          WorldState.snapshot()
+        );
+    }
+
+    closeModal();
+
     console.log(
-      "[Engine] Rain expert injected."
+      `[Engine] Expert injected: ${expertInstance.id}`
     );
 
   } catch (err) {
 
     console.error(
-      "[Engine] Failed to inject RainExpert:",
+      "[Engine] Expert injection failed:",
       err
     );
   }
 }
 
 /* ============================================================
- * Runtime ES6 Injection
+ * Modal Expert Buttons
  * ========================================================== */
+
+/**
+ * Handles:
+ * - rain
+ * - birds
+ * - typing
+ */
+
+document
+  .querySelectorAll(
+    "[data-expert]"
+  )
+  .forEach((button) => {
+
+    button.addEventListener(
+      "click",
+      async () => {
+
+        const expertType =
+          button.dataset.expert;
+
+        const modulePath =
+          EXPERT_MODULES[
+            expertType
+          ];
+
+        if (!modulePath) {
+
+          console.warn(
+            `Unknown expert: ${expertType}`
+          );
+
+          return;
+        }
+
+        await injectExpert(
+          modulePath
+        );
+      }
+    );
+  });
+
+/* ============================================================
+ * Runtime Code Injection
+ * ========================================================== */
+
+/**
+ * Custom ES6 runtime injection.
+ */
 
 injectCodeBtn
   ?.addEventListener(
@@ -457,11 +649,11 @@ injectCodeBtn
 
       try {
 
-        await ensureEngine();
+        /**
+         * Unlock engine.
+         */
 
-        if (!environment) {
-          return;
-        }
+        await ensureEngine();
 
         /**
          * ====================================================
@@ -478,6 +670,7 @@ Example:
 export default class MyExpert {
   constructor(audioContext, inputBus) {}
   getUICard() {}
+  bindCardControls(card) {}
   destroy() {}
 }`
           );
@@ -528,7 +721,7 @@ export default class MyExpert {
         ) {
 
           throw new Error(
-            "No default export class found."
+            "Injected module missing default export."
           );
         }
 
@@ -538,92 +731,94 @@ export default class MyExpert {
          * ====================================================
          */
 
-        const expert =
+        const expertInstance =
           new ExpertClass(
-            environment.context,
-            environment
-              .getInputBus()
+            bus.context,
+            bus.getInputBus()
           );
 
         /**
          * Safety.
          */
 
-        if (!expert.id) {
+        if (!expertInstance.id) {
 
-          expert.id =
+          expertInstance.id =
             crypto.randomUUID();
         }
 
         /**
          * ====================================================
-         * Register
+         * Router Registration
          * ====================================================
          */
 
+        router.registerExpert(
+          expertInstance
+        );
+
         activeExperts.set(
-          expert.id,
-          expert
+          expertInstance.id,
+          expertInstance
         );
 
         /**
          * ====================================================
-         * UI
+         * UI Injection
          * ====================================================
          */
 
-        if (
-          typeof expert
-            .getUICard ===
-          "function"
-        ) {
-
-          const wrapper =
-            document
-              .createElement(
-                "div"
-              );
-
-          wrapper.innerHTML =
-            expert.getUICard();
-
-          const card =
-            wrapper.firstElementChild;
-
-          expertRack.appendChild(
-            card
+        const wrapper =
+          document.createElement(
+            "div"
           );
 
-          /**
-           * Optional UI binding.
-           */
+        wrapper.innerHTML =
+          expertInstance
+            .getUICard()
+            .trim();
 
-          if (
-            typeof expert
-              .bindCardControls ===
-            "function"
-          ) {
+        const cardElement =
+          wrapper.firstElementChild;
 
-            expert.bindCardControls(
-              card
-            );
-          }
-        }
+        expertRack.appendChild(
+          cardElement
+        );
 
         /**
-         * Hydrate.
+         * CRITICAL:
+         * Bind controls.
          */
 
         if (
-          typeof expert
+          typeof expertInstance
+            .bindCardControls ===
+          "function"
+        ) {
+
+          expertInstance
+            .bindCardControls(
+              cardElement
+            );
+        }
+
+        /**
+         * Hydrate state.
+         */
+
+        if (
+          typeof expertInstance
             .onStateUpdate ===
           "function"
         ) {
 
-          expert.onStateUpdate(
-            WorldState.snapshot()
-          );
+          expertInstance
+            .onStateUpdate(
+              WorldState.snapshot()
+            );
         }
+
+        closeModal();
 
         console.log(
           "[Engine] Runtime expert injected."
@@ -648,8 +843,11 @@ export default class MyExpert {
  * ========================================================== */
 
 /**
- * CRITICAL:
- * Handles dynamically-created experts.
+ * CRITICAL FIX:
+ *
+ * ONE delegated listener.
+ *
+ * Handles ALL future experts.
  */
 
 expertRack
@@ -671,7 +869,7 @@ expertRack
       }
 
       /**
-       * Parent card.
+       * Closest card.
        */
 
       const card =
@@ -695,7 +893,7 @@ expertRack
       }
 
       /**
-       * Runtime expert.
+       * Runtime instance.
        */
 
       const expert =
@@ -709,7 +907,7 @@ expertRack
       }
 
       /**
-       * Lifecycle cleanup.
+       * Destroy lifecycle.
        */
 
       try {
@@ -731,20 +929,19 @@ expertRack
       }
 
       /**
-       * Remove registry.
+       * Remove from registry.
        */
 
       activeExperts.delete(id);
 
       /**
-       * Remove UI.
+       * Remove DOM.
        */
 
       card.remove();
 
       console.log(
-        "[Engine] Expert removed:",
-        id
+        `[Engine] Expert removed: ${id}`
       );
     }
   );
@@ -759,7 +956,7 @@ pressureValue.textContent =
   ).toFixed(2);
 
 /**
- * Initial world state.
+ * Initial state sync.
  */
 
 WorldState.setAtmosphericPressure(
@@ -774,24 +971,27 @@ WorldState.setEnclosure(
 );
 
 /**
- * Initial propagation.
+ * Broadcast initial snapshot.
  */
 
-propagateState();
+broadcastWorldState();
 
 /* ============================================================
- * BehavioralRulesEngine Hook
+ * Gesture-Based Early Unlock
  * ========================================================== */
 
 /**
- * Reserved future ecological routing.
+ * Helps mobile browsers.
  */
 
-if (
-  BehavioralRulesEngine
-) {
+window.addEventListener(
+  "pointerdown",
+  () => {
 
-  console.log(
-    "[Engine] BehavioralRulesEngine detected."
-  );
-}
+    ensureEngine();
+
+  },
+  {
+    once: true,
+  }
+);
