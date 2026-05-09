@@ -3,12 +3,13 @@
  * Symbiote Acoustic MoE World Simulator
  *
  * ------------------------------------------------------------
- * AAA SYSTEMS INTEGRATION LAYER
+ * PRINCIPAL SYSTEMS INTEGRATION LAYER
  * ------------------------------------------------------------
  *
  * Responsibilities:
  * - Engine bootstrap
  * - Browser audio unlock
+ * - Acoustic graph initialization
  * - Runtime expert injection
  * - Dynamic ES6 loading
  * - Expert lifecycle management
@@ -16,32 +17,23 @@
  * - UI ↔ Engine orchestration
  *
  * ------------------------------------------------------------
- * DESIGN PHILOSOPHY
+ * IMPORTANT FIXES
  * ------------------------------------------------------------
  *
- * This file acts as:
+ * ✓ FIXED:
+ *   Missing await bus.init()
  *
- * UI Layer
- *      ↓
- * Runtime Router
- *      ↓
- * Acoustic Bus
- *      ↓
- * Expert Modules
+ * ✓ FIXED:
+ *   Router memory leak on removal
  *
- * ------------------------------------------------------------
- * IMPORTANT
- * ------------------------------------------------------------
+ * ✓ FIXED:
+ *   Router/DOM state desynchronization
  *
- * This implementation fixes:
+ * ✓ FIXED:
+ *   Expert lifecycle cleanup
  *
- * ✓ No sound bug
- * ✓ Remove button bug
- * ✓ Dynamic injection bug
- * ✓ Slider desync
- * ✓ Context unlock race conditions
- * ✓ Missing bindCardControls()
- * ✓ Broken expert lifecycle
+ * ✓ FIXED:
+ *   Dynamic module injection lifecycle
  */
 
 /* ============================================================
@@ -96,7 +88,7 @@ const injectCodeBtn =
  * ========================================================== */
 
 /**
- * Shared acoustic bus.
+ * Shared acoustic environment.
  */
 
 let bus = null;
@@ -108,7 +100,7 @@ let bus = null;
 let router = null;
 
 /**
- * Engine flags.
+ * Runtime flags.
  */
 
 let initialized = false;
@@ -116,18 +108,25 @@ let initialized = false;
 let initializing = false;
 
 /**
- * RAF loop guard.
+ * RAF loop state.
  */
 
 let visualLoopStarted = false;
 
 /**
- * Runtime expert registry.
+ * DOM tracking ONLY.
  *
- * Map<string, Expert>
+ * IMPORTANT:
+ * Router is source-of-truth
+ * for actual engine state.
+ *
+ * Map<string, {
+ *   element: HTMLElement,
+ *   expert: object
+ * }>
  */
 
-const activeExperts =
+const activeExpertsDOM =
   new Map();
 
 /* ============================================================
@@ -135,7 +134,7 @@ const activeExperts =
  * ========================================================== */
 
 /**
- * Safe async sleep.
+ * Async sleep.
  *
  * @param {number} ms
  * @returns {Promise<void>}
@@ -167,26 +166,17 @@ function broadcastWorldState() {
     return;
   }
 
-  const snapshot =
-    WorldState.snapshot();
-
-  /**
-   * Push into MoE Router.
-   */
-
   router.broadcastState(
-    snapshot
+    WorldState.snapshot()
   );
 }
 
 /* ============================================================
- * Acoustic Update Loop
+ * Acoustic Loop
  * ========================================================== */
 
 /**
- * Global acoustic update loop.
- *
- * Runs continuously once engine unlocks.
+ * Continuous acoustic updates.
  */
 function startVisualLoop() {
 
@@ -198,22 +188,16 @@ function startVisualLoop() {
 
   function frame() {
 
-    if (bus) {
-
-      /**
-       * Update environmental acoustics.
-       */
-
-      if (
-        typeof bus
-          .updateAcoustics ===
+    if (
+      bus &&
+      typeof bus
+        .updateAcoustics ===
         "function"
-      ) {
+    ) {
 
-        bus.updateAcoustics(
-          WorldState.snapshot()
-        );
-      }
+      bus.updateAcoustics(
+        WorldState.snapshot()
+      );
     }
 
     requestAnimationFrame(frame);
@@ -223,18 +207,15 @@ function startVisualLoop() {
 }
 
 /* ============================================================
- * Engine Unlock
+ * Engine Bootstrap
  * ========================================================== */
 
 /**
- * CRITICAL:
- * Browser-safe audio unlock.
+ * Browser-safe engine unlock.
  *
- * Guarantees:
- * - single AudioContext
- * - single Router
- * - resumed context
- * - RAF loop started
+ * CRITICAL:
+ * MUST call:
+ * await bus.init()
  */
 async function ensureEngine() {
 
@@ -243,10 +224,6 @@ async function ensureEngine() {
    */
 
   if (initialized) {
-
-    /**
-     * Resume if suspended.
-     */
 
     if (
       bus?.context?.state ===
@@ -282,12 +259,22 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Master Bus
+     * Acoustic Bus
      * ========================================================
      */
 
     bus =
       new MasterAcousticBus();
+
+    /**
+     * ========================================================
+     * CRITICAL FIX
+     * ========================================================
+     *
+     * Build graph BEFORE usage.
+     */
+
+    await bus.init();
 
     /**
      * ========================================================
@@ -314,7 +301,7 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Start RAF Acoustics Loop
+     * Start acoustic updates
      * ========================================================
      */
 
@@ -323,7 +310,7 @@ async function ensureEngine() {
     initialized = true;
 
     console.log(
-      "[Engine] Audio unlocked."
+      "[Engine] Initialized."
     );
 
   } catch (err) {
@@ -344,7 +331,7 @@ async function ensureEngine() {
  * ========================================================== */
 
 /**
- * Pressure Slider
+ * Pressure slider.
  */
 
 pressureSlider
@@ -360,25 +347,17 @@ pressureSlider
       pressureValue.textContent =
         value.toFixed(2);
 
-      /**
-       * Update global state.
-       */
-
       WorldState
         .setAtmosphericPressure(
           value
         );
-
-      /**
-       * Broadcast to experts.
-       */
 
       broadcastWorldState();
     }
   );
 
 /**
- * Enclosure Select
+ * Enclosure selector.
  */
 
 enclosureSelect
@@ -396,14 +375,11 @@ enclosureSelect
   );
 
 /* ============================================================
- * Dynamic Expert Injection
+ * Expert Registry
  * ========================================================== */
 
 /**
- * Dynamic expert mapping.
- *
- * IMPORTANT:
- * Expandable architecture.
+ * Runtime expert modules.
  */
 
 const EXPERT_MODULES = {
@@ -418,8 +394,12 @@ const EXPERT_MODULES = {
     "./expert_typing.js",
 };
 
+/* ============================================================
+ * Expert Injection
+ * ========================================================== */
+
 /**
- * Shared injection pipeline.
+ * Shared expert injection pipeline.
  *
  * @param {string} modulePath
  */
@@ -430,9 +410,7 @@ async function injectExpert(
   try {
 
     /**
-     * ========================================================
-     * Engine Unlock
-     * ========================================================
+     * Unlock engine.
      */
 
     await ensureEngine();
@@ -465,7 +443,7 @@ async function injectExpert(
 
     /**
      * ========================================================
-     * Instantiate Expert
+     * Instantiate
      * ========================================================
      */
 
@@ -476,7 +454,7 @@ async function injectExpert(
       );
 
     /**
-     * Safety.
+     * Safety identity.
      */
 
     if (!expertInstance.id) {
@@ -487,7 +465,7 @@ async function injectExpert(
 
     /**
      * ========================================================
-     * Register To Router
+     * Register to Router
      * ========================================================
      */
 
@@ -497,18 +475,7 @@ async function injectExpert(
 
     /**
      * ========================================================
-     * Runtime Registry
-     * ========================================================
-     */
-
-    activeExperts.set(
-      expertInstance.id,
-      expertInstance
-    );
-
-    /**
-     * ========================================================
-     * UI Injection
+     * Create UI
      * ========================================================
      */
 
@@ -528,9 +495,13 @@ async function injectExpert(
     if (!cardElement) {
 
       throw new Error(
-        "Expert UI card invalid."
+        "Invalid expert card."
       );
     }
+
+    /**
+     * Mount DOM.
+     */
 
     expertRack.appendChild(
       cardElement
@@ -538,10 +509,8 @@ async function injectExpert(
 
     /**
      * ========================================================
-     * CRITICAL FIX
+     * Bind local controls
      * ========================================================
-     *
-     * Bind local controls immediately.
      */
 
     if (
@@ -558,21 +527,37 @@ async function injectExpert(
 
     /**
      * ========================================================
-     * Hydrate Current WorldState
+     * Hydrate state
      * ========================================================
      */
 
     if (
       typeof expertInstance
-        .onStateUpdate ===
+        .onWorldStateUpdate ===
       "function"
     ) {
 
       expertInstance
-        .onStateUpdate(
+        .onWorldStateUpdate(
           WorldState.snapshot()
         );
     }
+
+    /**
+     * ========================================================
+     * DOM tracking ONLY
+     * ========================================================
+     */
+
+    activeExpertsDOM.set(
+      expertInstance.id,
+      {
+        element:
+          cardElement,
+        expert:
+          expertInstance,
+      }
+    );
 
     closeModal();
 
@@ -592,13 +577,6 @@ async function injectExpert(
 /* ============================================================
  * Modal Expert Buttons
  * ========================================================== */
-
-/**
- * Handles:
- * - rain
- * - birds
- * - typing
- */
 
 document
   .querySelectorAll(
@@ -621,7 +599,7 @@ document
         if (!modulePath) {
 
           console.warn(
-            `Unknown expert: ${expertType}`
+            `Unknown expert type: ${expertType}`
           );
 
           return;
@@ -639,7 +617,7 @@ document
  * ========================================================== */
 
 /**
- * Custom ES6 runtime injection.
+ * Runtime ES6 expert injection.
  */
 
 injectCodeBtn
@@ -648,10 +626,6 @@ injectCodeBtn
     async () => {
 
       try {
-
-        /**
-         * Unlock engine.
-         */
 
         await ensureEngine();
 
@@ -665,12 +639,11 @@ injectCodeBtn
           prompt(
 `Paste ES6 Expert Class Code:
 
-Example:
-
 export default class MyExpert {
   constructor(audioContext, inputBus) {}
   getUICard() {}
   bindCardControls(card) {}
+  onWorldStateUpdate(state) {}
   destroy() {}
 }`
           );
@@ -738,7 +711,7 @@ export default class MyExpert {
           );
 
         /**
-         * Safety.
+         * Safety identity.
          */
 
         if (!expertInstance.id) {
@@ -749,16 +722,11 @@ export default class MyExpert {
 
         /**
          * ====================================================
-         * Router Registration
+         * Register to Router
          * ====================================================
          */
 
         router.registerExpert(
-          expertInstance
-        );
-
-        activeExperts.set(
-          expertInstance.id,
           expertInstance
         );
 
@@ -781,12 +749,18 @@ export default class MyExpert {
         const cardElement =
           wrapper.firstElementChild;
 
+        if (!cardElement) {
+
+          throw new Error(
+            "Injected expert card invalid."
+          );
+        }
+
         expertRack.appendChild(
           cardElement
         );
 
         /**
-         * CRITICAL:
          * Bind controls.
          */
 
@@ -808,15 +782,29 @@ export default class MyExpert {
 
         if (
           typeof expertInstance
-            .onStateUpdate ===
+            .onWorldStateUpdate ===
           "function"
         ) {
 
           expertInstance
-            .onStateUpdate(
+            .onWorldStateUpdate(
               WorldState.snapshot()
             );
         }
+
+        /**
+         * DOM tracking.
+         */
+
+        activeExpertsDOM.set(
+          expertInstance.id,
+          {
+            element:
+              cardElement,
+            expert:
+              expertInstance,
+          }
+        );
 
         closeModal();
 
@@ -843,11 +831,10 @@ export default class MyExpert {
  * ========================================================== */
 
 /**
+ * Handles ALL dynamic experts.
+ *
  * CRITICAL FIX:
- *
- * ONE delegated listener.
- *
- * Handles ALL future experts.
+ * router.unregisterExpert(id)
  */
 
 expertRack
@@ -893,49 +880,71 @@ expertRack
       }
 
       /**
-       * Runtime instance.
+       * DOM registry.
        */
 
-      const expert =
-        activeExperts.get(id);
+      const tracked =
+        activeExpertsDOM.get(id);
 
-      if (!expert) {
+      /**
+       * Lifecycle cleanup.
+       */
 
-        card.remove();
+      if (tracked?.expert) {
 
-        return;
+        try {
+
+          if (
+            typeof tracked
+              .expert
+              .destroy ===
+            "function"
+          ) {
+
+            tracked
+              .expert
+              .destroy();
+          }
+
+        } catch (err) {
+
+          console.warn(
+            "[Engine] Expert destroy failed:",
+            err
+          );
+        }
       }
 
       /**
-       * Destroy lifecycle.
+       * ========================================================
+       * CRITICAL FIX
+       * ========================================================
+       *
+       * Remove from router.
        */
 
-      try {
-
-        if (
-          typeof expert.destroy ===
+      if (
+        router &&
+        typeof router
+          .unregisterExpert ===
           "function"
-        ) {
+      ) {
 
-          expert.destroy();
-        }
-
-      } catch (err) {
-
-        console.warn(
-          "[Engine] Expert destroy failed:",
-          err
+        router.unregisterExpert(
+          id
         );
       }
 
       /**
-       * Remove from registry.
+       * Remove local DOM tracking.
        */
 
-      activeExperts.delete(id);
+      activeExpertsDOM.delete(
+        id
+      );
 
       /**
-       * Remove DOM.
+       * Remove UI.
        */
 
       card.remove();
@@ -956,7 +965,7 @@ pressureValue.textContent =
   ).toFixed(2);
 
 /**
- * Initial state sync.
+ * Initial WorldState.
  */
 
 WorldState.setAtmosphericPressure(
@@ -971,7 +980,7 @@ WorldState.setEnclosure(
 );
 
 /**
- * Broadcast initial snapshot.
+ * Initial sync.
  */
 
 broadcastWorldState();
@@ -981,7 +990,7 @@ broadcastWorldState();
  * ========================================================== */
 
 /**
- * Helps mobile browsers.
+ * Mobile browser helper.
  */
 
 window.addEventListener(
