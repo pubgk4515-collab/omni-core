@@ -1,17 +1,40 @@
 /**
  * app.js
- * Final Integration Layer
+ * Procedural Acoustic World Simulator
  *
  * ------------------------------------------------------------
- * UPDATED:
+ * UPDATED ARCHITECTURE
  * ------------------------------------------------------------
- * Added:
- * - ProceduralRainSynth
- * - Continuous stochastic rain generation
- * - Real-time rain morphing
- * - Rain intensity → audio synthesis mapping
  *
- * NO MP3 FILES USED FOR RAIN.
+ * FIX #1:
+ * Replaced primitive rain noise with:
+ * Multi-Band Stochastic Rain Engine
+ *
+ * Layers:
+ * - Distant Rumble
+ * - Mid Splatter
+ * - High Hiss
+ *
+ * Rain intensity now changes:
+ * - droplet density
+ * - modulation speed
+ * - spectral balance
+ * - stochastic activity
+ *
+ * NOT just volume.
+ *
+ * ------------------------------------------------------------
+ * FIX #2:
+ * Added Just-In-Time Probability Gate
+ *
+ * EcologicalAudioBehavior is patched at runtime:
+ * BEFORE playback starts:
+ * - re-evaluate BehavioralRulesEngine
+ * - abort playback instantly if probability = 0
+ *
+ * This prevents:
+ * - birds chirping during heavy rain
+ * - stale scheduled ecological events
  */
 
 import {
@@ -19,6 +42,7 @@ import {
   AtomicScheduler,
   ENTITY_TYPES,
   ENCLOSURE_TYPES,
+  BehavioralRulesEngine,
 } from "./world_state_engine.js";
 
 import {
@@ -75,83 +99,62 @@ const schedulerMini =
 let environment = null;
 let sampleBank = null;
 let scheduler = null;
-
-/**
- * NEW:
- * Procedural rain synthesizer.
- */
 let rainSynth = null;
 
 let initialized = false;
 
 /* ============================================================
- * Utility Helpers
+ * Utility
  * ========================================================== */
 
-/**
- * Clamp helper.
- * @param {number} value
- * @param {number} min
- * @param {number} max
- * @returns {number}
- */
-function clamp(value, min, max) {
+function clamp(v, min, max) {
   return Math.min(
     max,
-    Math.max(min, value)
+    Math.max(min, v)
   );
 }
 
-/**
- * Linear interpolation.
- * @param {number} a
- * @param {number} b
- * @param {number} t
- * @returns {number}
- */
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
 /* ============================================================
- * ProceduralRainSynth
+ * Multi-Band Stochastic Rain Engine
  * ========================================================== */
 
 /**
- * Continuous procedural rain generator.
+ * Advanced procedural rain synthesizer.
  *
  * ------------------------------------------------------------
- * AUDIO MODEL
+ * LAYERS
  * ------------------------------------------------------------
  *
- * White/Pink-ish stochastic noise
- *        ↓
- * Lowpass Filter
- *        ↓
- * Gain
- *        ↓
- * AcousticEnvironment
+ * 1. Distant Rumble
+ *    - low-frequency body
+ *    - atmospheric mass
+ *
+ * 2. Mid Splatter
+ *    - stochastic droplet impacts
+ *    - amplitude-modulated turbulence
+ *
+ * 3. High Hiss
+ *    - fine mist
+ *    - air texture
  *
  * ------------------------------------------------------------
- * BEHAVIOR
+ * INTENSITY MODEL
  * ------------------------------------------------------------
  *
- * intensity = 0
- *   → silent
+ * LOW:
+ * - sparse impacts
+ * - muffled texture
+ * - low modulation rate
  *
- * intensity = 1
- *   → louder
- *   → brighter
- *   → sharper transient texture
- *
- * ------------------------------------------------------------
- * WHY BUFFER LOOP?
- * ------------------------------------------------------------
- *
- * - extremely CPU efficient
- * - seamless
- * - stable on mobile
- * - render-thread safe
+ * HIGH:
+ * - rapid modulation
+ * - wider spectrum
+ * - aggressive splatter
+ * - dense rainfall field
  */
 class ProceduralRainSynth {
 
@@ -167,165 +170,274 @@ class ProceduralRainSynth {
       environment.context;
 
     /**
-     * Runtime nodes
+     * Master rain bus.
      */
-    this.source = null;
-    this.filter = null;
-    this.gain = null;
+    this.output =
+      this.context.createGain();
+
+    this.output.gain.value = 0;
 
     /**
-     * Internal intensity state
+     * --------------------------------------------------------
+     * Shared Noise Buffer
+     * --------------------------------------------------------
      */
-    this.intensity = 0;
+
+    const noiseBuffer =
+      this._createNoiseBuffer();
 
     /**
-     * Initialize graph.
+     * ========================================================
+     * LAYER 1 — DISTANT RUMBLE
+     * ========================================================
      */
-    this._build();
+
+    this.lowSource =
+      this.context.createBufferSource();
+
+    this.lowFilter =
+      this.context.createBiquadFilter();
+
+    this.lowGain =
+      this.context.createGain();
+
+    this.lowSource.buffer =
+      noiseBuffer;
+
+    this.lowSource.loop = true;
+
+    this.lowFilter.type =
+      "lowpass";
+
+    this.lowFilter.frequency.value =
+      500;
+
+    this.lowGain.gain.value =
+      0;
+
+    /**
+     * ========================================================
+     * LAYER 2 — MID SPLATTER
+     * ========================================================
+     */
+
+    this.midSource =
+      this.context.createBufferSource();
+
+    this.midBandpass =
+      this.context.createBiquadFilter();
+
+    this.midAMGain =
+      this.context.createGain();
+
+    this.midGain =
+      this.context.createGain();
+
+    this.midSource.buffer =
+      noiseBuffer;
+
+    this.midSource.loop = true;
+
+    this.midBandpass.type =
+      "bandpass";
+
+    this.midBandpass.frequency.value =
+      1200;
+
+    this.midBandpass.Q.value =
+      0.8;
+
+    /**
+     * ========================================================
+     * Stochastic Droplet Modulation
+     * ========================================================
+     */
+
+    this.modOsc =
+      this.context.createOscillator();
+
+    this.modDepth =
+      this.context.createGain();
+
+    this.modOsc.type =
+      "triangle";
+
+    this.modOsc.frequency.value =
+      2;
+
+    this.modDepth.gain.value =
+      0.4;
+
+    /**
+     * ========================================================
+     * LAYER 3 — HIGH HISS
+     * ========================================================
+     */
+
+    this.highSource =
+      this.context.createBufferSource();
+
+    this.highHighpass =
+      this.context.createBiquadFilter();
+
+    this.highGain =
+      this.context.createGain();
+
+    this.highSource.buffer =
+      noiseBuffer;
+
+    this.highSource.loop = true;
+
+    this.highHighpass.type =
+      "highpass";
+
+    this.highHighpass.frequency.value =
+      5000;
+
+    this.highGain.gain.value =
+      0;
+
+    /**
+     * ========================================================
+     * ROUTING
+     * ========================================================
+     */
+
+    /**
+     * Low layer
+     */
+    this.lowSource.connect(
+      this.lowFilter
+    );
+
+    this.lowFilter.connect(
+      this.lowGain
+    );
+
+    this.lowGain.connect(
+      this.output
+    );
+
+    /**
+     * Mid layer
+     */
+    this.midSource.connect(
+      this.midBandpass
+    );
+
+    this.midBandpass.connect(
+      this.midAMGain
+    );
+
+    this.midAMGain.connect(
+      this.midGain
+    );
+
+    this.midGain.connect(
+      this.output
+    );
+
+    /**
+     * AM modulation
+     */
+    this.modOsc.connect(
+      this.modDepth
+    );
+
+    this.modDepth.connect(
+      this.midAMGain.gain
+    );
+
+    /**
+     * High layer
+     */
+    this.highSource.connect(
+      this.highHighpass
+    );
+
+    this.highHighpass.connect(
+      this.highGain
+    );
+
+    this.highGain.connect(
+      this.output
+    );
+
+    /**
+     * Output
+     */
+    this.output.connect(
+      environment.getInputBus()
+    );
+
+    /**
+     * Start persistent render graph.
+     */
+    this.lowSource.start();
+    this.midSource.start();
+    this.highSource.start();
+    this.modOsc.start();
   }
 
   /* ============================================================
-   * Graph Construction
+   * Noise Generation
    * ========================================================== */
 
   /**
-   * Creates:
-   * - stochastic noise buffer
-   * - lowpass
-   * - gain
+   * Creates long stochastic noise field.
+   * @returns {AudioBuffer}
    */
-  _build() {
+  _createNoiseBuffer() {
 
-    /**
-     * --------------------------------------------------------
-     * Create long stochastic noise buffer
-     * --------------------------------------------------------
-     */
-
-    const bufferLength =
+    const length =
       this.context.sampleRate * 4;
 
     const buffer =
       this.context.createBuffer(
         1,
-        bufferLength,
+        length,
         this.context.sampleRate
       );
 
-    const channel =
+    const data =
       buffer.getChannelData(0);
-
-    /**
-     * --------------------------------------------------------
-     * Pink-ish noise generation
-     * --------------------------------------------------------
-     *
-     * Uses weighted random smoothing
-     * to avoid harsh white-noise hiss.
-     */
 
     let last = 0;
 
-    for (let i = 0; i < bufferLength; i++) {
+    for (let i = 0; i < length; i++) {
 
       const white =
         Math.random() * 2 - 1;
 
       /**
-       * Crude pink-ish filter.
+       * Pink-ish smoothing.
        */
       last =
         (0.985 * last) +
         (0.015 * white);
 
       /**
-       * Add micro stochastic splatter.
+       * Rare sharp droplets.
        */
-      const droplets =
-        (Math.random() ** 8) *
-        (Math.random() > 0.985 ? 1 : 0);
+      const transient =
+        Math.random() > 0.992
+          ? Math.random() * 1.4
+          : 0;
 
-      channel[i] =
+      data[i] =
         (last * 0.85) +
-        (droplets * 0.3);
+        transient;
     }
 
-    /**
-     * --------------------------------------------------------
-     * Source
-     * --------------------------------------------------------
-     */
-
-    this.source =
-      this.context.createBufferSource();
-
-    this.source.buffer =
-      buffer;
-
-    this.source.loop = true;
-
-    /**
-     * --------------------------------------------------------
-     * Filter
-     * --------------------------------------------------------
-     */
-
-    this.filter =
-      this.context.createBiquadFilter();
-
-    this.filter.type =
-      "lowpass";
-
-    this.filter.frequency.value =
-      400;
-
-    this.filter.Q.value =
-      0.4;
-
-    /**
-     * --------------------------------------------------------
-     * Gain
-     * --------------------------------------------------------
-     */
-
-    this.gain =
-      this.context.createGain();
-
-    this.gain.gain.value = 0;
-
-    /**
-     * --------------------------------------------------------
-     * Routing
-     * --------------------------------------------------------
-     */
-
-    this.source.connect(
-      this.filter
-    );
-
-    this.filter.connect(
-      this.gain
-    );
-
-    this.gain.connect(
-      this.environment.getInputBus()
-    );
-
-    /**
-     * --------------------------------------------------------
-     * Start continuous render
-     * --------------------------------------------------------
-     */
-
-    this.source.start();
+    return buffer;
   }
 
   /* ============================================================
-   * Real-Time Morphing
+   * Real-Time Rain Morphing
    * ========================================================== */
 
   /**
-   * Morphs rain texture continuously.
+   * Morphs rain ecosystem continuously.
    *
    * @param {number} intensity
    */
@@ -334,69 +446,262 @@ class ProceduralRainSynth {
     intensity =
       clamp(intensity, 0, 1);
 
-    this.intensity =
-      intensity;
-
     const now =
       this.context.currentTime;
 
     /**
-     * --------------------------------------------------------
-     * Gain Mapping
-     * --------------------------------------------------------
-     *
-     * Exponential-ish loudness curve.
+     * ========================================================
+     * MASTER DENSITY
+     * ========================================================
      */
 
-    const targetGain =
-      Math.pow(intensity, 1.35) * 0.65;
+    const masterGain =
+      Math.pow(
+        intensity,
+        1.2
+      ) * 0.9;
+
+    this.output.gain
+      .setTargetAtTime(
+        masterGain,
+        now,
+        0.08
+      );
 
     /**
-     * --------------------------------------------------------
-     * Filter Mapping
-     * --------------------------------------------------------
-     *
-     * Light rain:
-     *   muffled low frequencies
-     *
-     * Heavy rain:
-     *   brighter crisp droplets
+     * ========================================================
+     * DISTANT RUMBLE
+     * ========================================================
      */
 
-    const targetCutoff =
+    const lowGain =
       lerp(
-        400,
-        3500,
+        0.02,
+        0.45,
+        intensity
+      );
+
+    const lowCutoff =
+      lerp(
+        250,
+        900,
+        intensity
+      );
+
+    this.lowGain.gain
+      .setTargetAtTime(
+        lowGain,
+        now,
+        0.12
+      );
+
+    this.lowFilter.frequency
+      .setTargetAtTime(
+        lowCutoff,
+        now,
+        0.12
+      );
+
+    /**
+     * ========================================================
+     * MID SPLATTER
+     * ========================================================
+     *
+     * Core realism layer.
+     */
+
+    const midGain =
+      lerp(
+        0.01,
+        0.85,
         intensity
       );
 
     /**
-     * --------------------------------------------------------
-     * Smooth Morphing
-     * --------------------------------------------------------
+     * Higher rain:
+     * faster droplet impacts.
+     */
+    const modulationRate =
+      lerp(
+        1.5,
+        28,
+        intensity
+      );
+
+    /**
+     * Heavy rain broadens
+     * droplet spectrum.
+     */
+    const bandCenter =
+      lerp(
+        700,
+        3200,
+        intensity
+      );
+
+    /**
+     * Decreasing Q widens
+     * chaotic rainfall texture.
+     */
+    const bandQ =
+      lerp(
+        2.2,
+        0.45,
+        intensity
+      );
+
+    /**
+     * More intense splatter motion.
+     */
+    const modDepth =
+      lerp(
+        0.08,
+        0.95,
+        intensity
+      );
+
+    this.midGain.gain
+      .setTargetAtTime(
+        midGain,
+        now,
+        0.08
+      );
+
+    this.modOsc.frequency
+      .setTargetAtTime(
+        modulationRate,
+        now,
+        0.08
+      );
+
+    this.modDepth.gain
+      .setTargetAtTime(
+        modDepth,
+        now,
+        0.08
+      );
+
+    this.midBandpass.frequency
+      .setTargetAtTime(
+        bandCenter,
+        now,
+        0.08
+      );
+
+    this.midBandpass.Q
+      .setTargetAtTime(
+        bandQ,
+        now,
+        0.08
+      );
+
+    /**
+     * ========================================================
+     * HIGH HISS
+     * ========================================================
      */
 
-    this.gain.gain.setTargetAtTime(
-      targetGain,
-      now,
-      0.08
-    );
+    const highGain =
+      lerp(
+        0,
+        0.38,
+        intensity
+      );
 
-    this.filter.frequency.setTargetAtTime(
-      targetCutoff,
-      now,
-      0.08
-    );
+    const highCut =
+      lerp(
+        7000,
+        2500,
+        intensity
+      );
+
+    this.highGain.gain
+      .setTargetAtTime(
+        highGain,
+        now,
+        0.08
+      );
+
+    this.highHighpass.frequency
+      .setTargetAtTime(
+        highCut,
+        now,
+        0.08
+      );
   }
+}
+
+/* ============================================================
+ * JIT Ecological Gate Patch
+ * ========================================================== */
+
+/**
+ * CRITICAL FIX:
+ *
+ * Prevent stale scheduled ecological events.
+ *
+ * Before playback:
+ * - re-query world state
+ * - re-evaluate ecological rules
+ * - abort instantly if probability = 0
+ *
+ * Example:
+ * - Bird scheduled 5 sec ago
+ * - Rain suddenly becomes heavy
+ * - Playback prevented at final moment
+ */
+
+function patchEcologicalBehavior() {
+
+  const originalExecute =
+    EcologicalAudioBehavior
+      .prototype
+      .onExecute;
+
+  EcologicalAudioBehavior
+    .prototype
+    .onExecute =
+      async function(context) {
+
+        /**
+         * ----------------------------------------------------
+         * Real-time ecological re-evaluation
+         * ----------------------------------------------------
+         */
+
+        const liveRules =
+          BehavioralRulesEngine.evaluate(
+            this.entityType,
+            WorldState.snapshot()
+          );
+
+        /**
+         * HARD GATE
+         */
+        if (
+          liveRules
+            ?.probabilityMultiplier <= 0
+        ) {
+          return;
+        }
+
+        /**
+         * Continue playback.
+         */
+        return await originalExecute.call(
+          this,
+          {
+            ...context,
+            rules: liveRules,
+          }
+        );
+      };
 }
 
 /* ============================================================
  * Initialization
  * ========================================================== */
 
-/**
- * Creates full simulation runtime.
- */
 async function initializeSimulation() {
 
   if (initialized) {
@@ -407,12 +712,14 @@ async function initializeSimulation() {
 
     /**
      * --------------------------------------------------------
-     * Acoustic Environment
+     * Environment
      * --------------------------------------------------------
      */
 
     environment =
-      new AcousticEnvironment();
+      new AcousticEnvironment({
+        debug: false,
+      });
 
     await environment.init();
 
@@ -420,8 +727,7 @@ async function initializeSimulation() {
 
     /**
      * --------------------------------------------------------
-     * NEW:
-     * Procedural Rain Synth
+     * Rain Engine
      * --------------------------------------------------------
      */
 
@@ -432,14 +738,25 @@ async function initializeSimulation() {
 
     /**
      * --------------------------------------------------------
-     * Sample Bank
+     * SampleBank
      * --------------------------------------------------------
      */
 
     sampleBank =
       new SampleBank(
-        environment.context
+        environment.context,
+        {
+          debug: false,
+        }
       );
+
+    /**
+     * --------------------------------------------------------
+     * Patch JIT ecological gating
+     * --------------------------------------------------------
+     */
+
+    patchEcologicalBehavior();
 
     /**
      * --------------------------------------------------------
@@ -453,9 +770,9 @@ async function initializeSimulation() {
       });
 
     /**
-     * --------------------------------------------------------
-     * Bird Behavior
-     * --------------------------------------------------------
+     * ========================================================
+     * BIRDS
+     * ========================================================
      */
 
     const birdBehavior =
@@ -466,7 +783,7 @@ async function initializeSimulation() {
         entityType:
           ENTITY_TYPES.BIRDS,
 
-        baseRate: 0.18,
+        baseRate: 0.22,
 
         sampleUrls: [
           "./chirp1.mp3",
@@ -476,17 +793,19 @@ async function initializeSimulation() {
         environment,
         sampleBank,
 
-        baseVolume: 0.22,
+        baseVolume: 0.24,
 
         pitchRange: [0.92, 1.08],
 
         panRange: [-1, 1],
+
+        gainVariance: 0.2,
       });
 
     /**
-     * --------------------------------------------------------
-     * Thunder Behavior
-     * --------------------------------------------------------
+     * ========================================================
+     * THUNDER
+     * ========================================================
      */
 
     const thunderBehavior =
@@ -497,7 +816,7 @@ async function initializeSimulation() {
         entityType:
           ENTITY_TYPES.THUNDER,
 
-        baseRate: 0.025,
+        baseRate: 0.03,
 
         sampleUrls: [
           "./thunder.mp3",
@@ -506,17 +825,17 @@ async function initializeSimulation() {
         environment,
         sampleBank,
 
-        baseVolume: 0.55,
+        baseVolume: 0.65,
 
         pitchRange: [0.96, 1.02],
 
         panRange: [-0.7, 0.7],
+
+        gainVariance: 0.1,
       });
 
     /**
-     * --------------------------------------------------------
-     * Register Behaviors
-     * --------------------------------------------------------
+     * Register behaviors.
      */
 
     scheduler.registerBehavior(
@@ -528,39 +847,29 @@ async function initializeSimulation() {
     );
 
     /**
-     * --------------------------------------------------------
-     * Optional preload
-     * --------------------------------------------------------
+     * Optional preload.
      */
 
     sampleBank.preload([
       "./chirp1.mp3",
       "./chirp2.mp3",
       "./thunder.mp3",
-    ]).catch(() => {
-
-      console.warn(
-        "[App] Preload skipped."
-      );
-    });
+    ]);
 
     /**
-     * --------------------------------------------------------
-     * Start Scheduler
-     * --------------------------------------------------------
+     * Start scheduler.
      */
 
     scheduler.start();
 
     /**
-     * --------------------------------------------------------
-     * Initial Acoustics
-     * --------------------------------------------------------
+     * Initial acoustics.
      */
 
-    environment.updateEnvironmentalAcoustics(
-      WorldState.snapshot()
-    );
+    environment
+      .updateEnvironmentalAcoustics(
+        WorldState.snapshot()
+      );
 
     initialized = true;
 
@@ -583,9 +892,6 @@ async function initializeSimulation() {
  * UI Controls
  * ========================================================== */
 
-/**
- * Rain slider.
- */
 rainSlider.addEventListener(
   "input",
   (e) => {
@@ -596,18 +902,11 @@ rainSlider.addEventListener(
     rainValue.textContent =
       value.toFixed(2);
 
-    /**
-     * Update world state.
-     */
-    WorldState.setRainIntensity(
-      value
-    );
+    WorldState
+      .setRainIntensity(value);
   }
 );
 
-/**
- * Enclosure selector.
- */
 enclosureSelect.addEventListener(
   "change",
   (e) => {
@@ -615,13 +914,9 @@ enclosureSelect.addEventListener(
     const enclosure =
       e.target.value;
 
-    WorldState.setEnclosure(
-      enclosure
-    );
+    WorldState
+      .setEnclosure(enclosure);
 
-    /**
-     * Morph environment acoustics.
-     */
     if (environment) {
 
       environment
@@ -632,9 +927,6 @@ enclosureSelect.addEventListener(
   }
 );
 
-/**
- * Initialize overlay.
- */
 initButton.addEventListener(
   "click",
   async () => {
@@ -655,46 +947,26 @@ initButton.addEventListener(
 );
 
 /* ============================================================
- * Live Visualization Loop
+ * Live Simulation Loop
  * ========================================================== */
 
-/**
- * requestAnimationFrame loop.
- *
- * Synchronizes:
- * - UI
- * - world state
- * - scheduler
- * - procedural rain audio
- */
 function startVisualLoop() {
 
   function frame() {
 
     if (initialized) {
 
-      /**
-       * ------------------------------------------------------
-       * World Snapshot
-       * ----------------------------------------------------
-       */
-
       const state =
         WorldState.snapshot();
 
       const rain =
-        state.weather.rainIntensity;
-
-      const enclosure =
-        state.listener.enclosure;
+        state.weather
+          .rainIntensity;
 
       /**
        * ------------------------------------------------------
-       * NEW:
-       * Rain Synth Synchronization
+       * Real-time rain synthesis
        * ----------------------------------------------------
-       *
-       * Real-time audio morphing.
        */
 
       if (rainSynth) {
@@ -703,21 +975,15 @@ function startVisualLoop() {
 
       /**
        * ------------------------------------------------------
-       * World UI
+       * UI
        * ----------------------------------------------------
        */
 
       worldStateText.textContent =
-        `${enclosure}`;
+        `${state.listener.enclosure}`;
 
       worldMini.textContent =
         `Rain: ${rain.toFixed(2)} · Hour: ${state.time.hour.toFixed(1)}`;
-
-      /**
-       * ------------------------------------------------------
-       * Scheduler UI
-       * ----------------------------------------------------
-       */
 
       const schedulerState =
         scheduler.getState();
@@ -725,15 +991,12 @@ function startVisualLoop() {
       schedulerText.textContent =
         `${schedulerState.behaviorCount} Behaviors`;
 
-      const behaviorSummary =
-        schedulerState.behaviors
-          .map((b) => {
-            return `${b.entityType}: ${b.totalEvents}`;
-          })
-          .join(" · ");
-
       schedulerMini.textContent =
-        behaviorSummary || "No Events";
+        schedulerState.behaviors
+          .map((b) =>
+            `${b.entityType}: ${b.totalEvents}`
+          )
+          .join(" · ");
     }
 
     requestAnimationFrame(frame);
@@ -743,7 +1006,7 @@ function startVisualLoop() {
 }
 
 /* ============================================================
- * Initial World Defaults
+ * Initial Defaults
  * ========================================================== */
 
 WorldState.setRainIntensity(0);
