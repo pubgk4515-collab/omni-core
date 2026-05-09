@@ -1,110 +1,163 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>OmniSymbiote</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>OmniEngine Factory</title>
   <style>
-    /* — Mobile‑first strictness, no scrolling — */
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100dvh; overflow: hidden; background: #0a0a0a; }
+    :root {
+      --bg-color: #030303;
+      --glass-bg: rgba(20, 20, 22, 0.65);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --accent: #e0e0e0;
+      --text-muted: #7a7a7a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-      display: flex; flex-direction: column;
+      background-color: var(--bg-color);
+      color: var(--accent);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
     }
 
-    /* — Organic “Symbiote” background — */
-    .bg-symbiote {
-      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-      background: radial-gradient(ellipse at 30% 20%, #1a0e22, #000 70%),
-                  radial-gradient(ellipse at 70% 80%, #0e1a22, transparent 60%);
-      filter: contrast(1.1);
-      z-index: 0;
-    }
-
-    /* — Bottom 35% glass panel (iOS 17 frosted glass) — */
-    .bottom-panel {
-      position: fixed; bottom: 0; left: 0; width: 100%; height: 35dvh;
-      background: rgba(18,18,22,0.6);
-      backdrop-filter: blur(30px) saturate(180%);
-      -webkit-backdrop-filter: blur(30px) saturate(180%);
-      border-top: 1px solid rgba(255,255,255,0.08);
-      box-shadow: 0 -10px 30px rgba(0,0,0,0.5);
-      z-index: 2;
-      display: flex; flex-direction: column;
-      padding: 12px 8px 8px;
-    }
-
-    /* — Swipeable horizontal tab strip — */
-    .tabs-scroll {
+    /* Symbiote Organic Visuals at the top */
+    .visual-space {
       flex: 1;
-      overflow-x: auto; overflow-y: hidden;
-      display: flex; gap: 12px;
-      scroll-snap-type: x mandatory;
-      -webkit-overflow-scrolling: touch;
-      padding-bottom: 4px;
-    }
-    .tabs-scroll::-webkit-scrollbar { display: none; }
-
-    /* — Individual module card — */
-    .tab-card {
-      min-width: 80vw; max-width: 85vw;
-      height: 100%;
-      background: rgba(255,255,255,0.06);
-      border-radius: 24px;
-      padding: 14px 18px;
-      display: flex; flex-direction: column; align-items: center;
-      gap: 10px;
-      scroll-snap-align: center;
-      border: 1px solid rgba(255,255,255,0.05);
-      box-shadow: inset 0 0 20px rgba(0,0,0,0.3);
-      transition: background 0.2s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
     }
 
-    .module-name {
-      color: #e0e0e0; font-weight: 600; font-size: 1.1rem;
-      letter-spacing: 0.5px; text-transform: uppercase;
+    .greeting {
+      font-size: 1.2rem;
+      font-weight: 300;
+      letter-spacing: 2px;
+      color: var(--text-muted);
+      position: absolute;
+      top: 40px;
     }
 
-    .slider-container {
-      width: 100%; display: flex; align-items: center; gap: 8px;
+    .status-ring {
+      width: 150px;
+      height: 150px;
+      border-radius: 50%;
+      border: 1px solid var(--glass-border);
+      box-shadow: 0 0 40px rgba(255, 255, 255, 0.02);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 200;
+      letter-spacing: 4px;
+      transition: all 0.8s ease;
     }
+
+    /* One UI 8.5 Ergonomics - Everything in the bottom 35% */
+    .control-deck {
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-top: 1px solid var(--glass-border);
+      padding: 24px 20px 40px 20px;
+      border-radius: 30px 30px 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .slider-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      font-weight: 500;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
     input[type=range] {
-      flex: 1; height: 6px; -webkit-appearance: none;
-      background: rgba(255,255,255,0.15); border-radius: 3px; outline: none;
+      -webkit-appearance: none;
+      width: 100%;
+      background: transparent;
     }
+
+    input[type=range]::-webkit-slider-runnable-track {
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+    }
+
     input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 24px; height: 24px;
-      background: #ffffff; border-radius: 50%; border: 2px solid rgba(255,255,255,0.4);
-      box-shadow: 0 0 14px rgba(255,255,255,0.25);
+      -webkit-appearance: none;
+      height: 20px;
+      width: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-top: -8px;
+      box-shadow: 0 0 10px rgba(255,255,255,0.2);
     }
 
-    .play-pause-btn {
-      background: rgba(255,255,255,0.12); border: none; color: #fff;
-      font-size: 1.3rem; width: 44px; height: 44px; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(10px); transition: 0.2s;
+    /* The Factory Button */
+    .btn-generate {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 14px;
+      padding: 18px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-top: 10px;
+      transition: transform 0.1s ease;
     }
-    .play-pause-btn.active { background: #6a4c93; }
+    
+    .btn-generate:active { transform: scale(0.97); }
 
-    /* — Auto button fixed in the panel — */
-    .auto-btn {
-      align-self: flex-end;
-      background: linear-gradient(135deg, #4a3f6b, #2e2a4d);
-      color: #fff; border: none; padding: 12px 24px; border-radius: 30px;
-      font-weight: 700; letter-spacing: 1px; margin-top: 6px;
-      backdrop-filter: blur(10px); box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    #vibeLabel {
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      min-height: 15px;
     }
   </style>
 </head>
 <body>
-  <div class="bg-symbiote"></div>
 
-  <div class="bottom-panel">
-    <div class="tabs-scroll" id="tabsContainer"></div>
-    <button class="auto-btn" id="autoButton">AUTO</button>
+  <div class="visual-space">
+    <div class="greeting">Hi Ameer</div>
+    <div class="status-ring" id="playBtn">BOOT</div>
   </div>
 
-  <script type="module" src="omni_core.js"></script>
+  <div class="control-deck">
+    <div id="vibeLabel">AWAITING GENERATION...</div>
+    
+    <div class="slider-group">
+      <div class="slider-header"><span>Drone Core</span><span id="val-drone">0%</span></div>
+      <input type="range" id="droneSlider" min="0" max="1" step="0.01" value="0">
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-header"><span>Wind Dynamics</span><span id="val-wind">0%</span></div>
+      <input type="range" id="windSlider" min="0" max="1" step="0.01" value="0">
+    </div>
+
+    <button class="btn-generate" id="generateBtn">Generate Vibe</button>
+  </div>
+
+  <script src="omni_core.js" type="module"></script>
 </body>
 </html>
