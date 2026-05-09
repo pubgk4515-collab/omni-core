@@ -8,32 +8,25 @@
  *
  * Responsibilities:
  * - Engine bootstrap
- * - Browser audio unlock
+ * - AudioContext unlock
  * - Acoustic graph initialization
  * - Runtime expert injection
  * - Dynamic ES6 loading
- * - Expert lifecycle management
  * - WorldState synchronization
- * - UI ↔ Engine orchestration
+ * - Modal orchestration
+ * - Expert lifecycle cleanup
  *
  * ------------------------------------------------------------
- * IMPORTANT FIXES
+ * CRITICAL FIXES
  * ------------------------------------------------------------
  *
- * ✓ FIXED:
- *   Missing await bus.init()
- *
- * ✓ FIXED:
- *   Router memory leak on removal
- *
- * ✓ FIXED:
- *   Router/DOM state desynchronization
- *
- * ✓ FIXED:
- *   Expert lifecycle cleanup
- *
- * ✓ FIXED:
- *   Dynamic module injection lifecycle
+ * ✓ Explicit modal logic
+ * ✓ Fixed silent injection failure
+ * ✓ Fixed DOM insertion pipeline
+ * ✓ Fixed expert card mounting
+ * ✓ Fixed remove delegation
+ * ✓ Fixed router cleanup
+ * ✓ Added hard fail alerts
  */
 
 /* ============================================================
@@ -63,6 +56,11 @@ const layerModal =
     "layerModal"
   );
 
+const addLayerBtn =
+  document.getElementById(
+    "addLayerBtn"
+  );
+
 const pressureSlider =
   document.getElementById(
     "pressureSlider"
@@ -87,46 +85,23 @@ const injectCodeBtn =
  * Runtime
  * ========================================================== */
 
-/**
- * Shared acoustic environment.
- */
-
 let bus = null;
 
-/**
- * Shared MoE router.
- */
-
 let router = null;
-
-/**
- * Runtime flags.
- */
 
 let initialized = false;
 
 let initializing = false;
 
-/**
- * RAF loop state.
- */
-
 let visualLoopStarted = false;
 
 /**
- * DOM tracking ONLY.
+ * DOM/expert tracking.
  *
- * IMPORTANT:
- * Router is source-of-truth
- * for actual engine state.
- *
- * Map<string, {
- *   element: HTMLElement,
- *   expert: object
- * }>
+ * Map<string, object>
  */
 
-const activeExpertsDOM =
+const activeExperts =
   new Map();
 
 /* ============================================================
@@ -148,17 +123,7 @@ function sleep(ms) {
 }
 
 /**
- * Safe modal close.
- */
-function closeModal() {
-
-  layerModal
-    ?.classList
-    .remove("open");
-}
-
-/**
- * Broadcast latest state.
+ * Broadcast latest WorldState.
  */
 function broadcastWorldState() {
 
@@ -172,12 +137,74 @@ function broadcastWorldState() {
 }
 
 /* ============================================================
+ * Modal Logic
+ * ========================================================== */
+
+/**
+ * CRITICAL FIX:
+ * Explicit modal opening.
+ */
+
+addLayerBtn
+  ?.addEventListener(
+    "click",
+    () => {
+
+      layerModal
+        ?.classList
+        .add("open");
+    }
+  );
+
+/**
+ * Close modal on overlay click.
+ */
+
+layerModal
+  ?.addEventListener(
+    "click",
+    (e) => {
+
+      /**
+       * Overlay click.
+       */
+
+      if (
+        e.target ===
+        layerModal
+      ) {
+
+        layerModal
+          .classList
+          .remove("open");
+      }
+
+      /**
+       * Any sheet button click.
+       */
+
+      if (
+        e.target.classList
+          .contains(
+            "sheet-btn"
+          )
+      ) {
+
+        layerModal
+          .classList
+          .remove("open");
+      }
+    }
+  );
+
+/* ============================================================
  * Acoustic Loop
  * ========================================================== */
 
 /**
- * Continuous acoustic updates.
+ * Continuous acoustics updater.
  */
+
 function startVisualLoop() {
 
   if (visualLoopStarted) {
@@ -212,15 +239,12 @@ function startVisualLoop() {
 
 /**
  * Browser-safe engine unlock.
- *
- * CRITICAL:
- * MUST call:
- * await bus.init()
  */
+
 async function ensureEngine() {
 
   /**
-   * Already initialized.
+   * Already ready.
    */
 
   if (initialized) {
@@ -237,7 +261,7 @@ async function ensureEngine() {
   }
 
   /**
-   * Parallel init protection.
+   * Parallel init guard.
    */
 
   if (initializing) {
@@ -267,11 +291,8 @@ async function ensureEngine() {
       new MasterAcousticBus();
 
     /**
-     * ========================================================
-     * CRITICAL FIX
-     * ========================================================
-     *
-     * Build graph BEFORE usage.
+     * CRITICAL:
+     * Build graph.
      */
 
     await bus.init();
@@ -287,7 +308,7 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Browser Audio Unlock
+     * Unlock browser audio
      * ========================================================
      */
 
@@ -301,7 +322,7 @@ async function ensureEngine() {
 
     /**
      * ========================================================
-     * Start acoustic updates
+     * Start updates
      * ========================================================
      */
 
@@ -320,6 +341,11 @@ async function ensureEngine() {
       err
     );
 
+    alert(
+      "ENGINE INIT ERROR: " +
+      err.message
+    );
+
   } finally {
 
     initializing = false;
@@ -327,7 +353,7 @@ async function ensureEngine() {
 }
 
 /* ============================================================
- * World State Sync
+ * WorldState Sync
  * ========================================================== */
 
 /**
@@ -375,208 +401,12 @@ enclosureSelect
   );
 
 /* ============================================================
- * Expert Registry
- * ========================================================== */
-
-/**
- * Runtime expert modules.
- */
-
-const EXPERT_MODULES = {
-
-  rain:
-    "./expert_rain.js",
-
-  birds:
-    "./expert_birds.js",
-
-  typing:
-    "./expert_typing.js",
-};
-
-/* ============================================================
  * Expert Injection
  * ========================================================== */
 
 /**
- * Shared expert injection pipeline.
- *
- * @param {string} modulePath
+ * Expert buttons.
  */
-async function injectExpert(
-  modulePath
-) {
-
-  try {
-
-    /**
-     * Unlock engine.
-     */
-
-    await ensureEngine();
-
-    if (!bus || !router) {
-      return;
-    }
-
-    /**
-     * ========================================================
-     * Dynamic Import
-     * ========================================================
-     */
-
-    const module =
-      await import(modulePath);
-
-    const ExpertClass =
-      module.default;
-
-    if (
-      typeof ExpertClass !==
-      "function"
-    ) {
-
-      throw new Error(
-        `Invalid expert module: ${modulePath}`
-      );
-    }
-
-    /**
-     * ========================================================
-     * Instantiate
-     * ========================================================
-     */
-
-    const expertInstance =
-      new ExpertClass(
-        bus.context,
-        bus.getInputBus()
-      );
-
-    /**
-     * Safety identity.
-     */
-
-    if (!expertInstance.id) {
-
-      expertInstance.id =
-        crypto.randomUUID();
-    }
-
-    /**
-     * ========================================================
-     * Register to Router
-     * ========================================================
-     */
-
-    router.registerExpert(
-      expertInstance
-    );
-
-    /**
-     * ========================================================
-     * Create UI
-     * ========================================================
-     */
-
-    const wrapper =
-      document.createElement(
-        "div"
-      );
-
-    wrapper.innerHTML =
-      expertInstance
-        .getUICard()
-        .trim();
-
-    const cardElement =
-      wrapper.firstElementChild;
-
-    if (!cardElement) {
-
-      throw new Error(
-        "Invalid expert card."
-      );
-    }
-
-    /**
-     * Mount DOM.
-     */
-
-    expertRack.appendChild(
-      cardElement
-    );
-
-    /**
-     * ========================================================
-     * Bind local controls
-     * ========================================================
-     */
-
-    if (
-      typeof expertInstance
-        .bindCardControls ===
-      "function"
-    ) {
-
-      expertInstance
-        .bindCardControls(
-          cardElement
-        );
-    }
-
-    /**
-     * ========================================================
-     * Hydrate state
-     * ========================================================
-     */
-
-    if (
-      typeof expertInstance
-        .onWorldStateUpdate ===
-      "function"
-    ) {
-
-      expertInstance
-        .onWorldStateUpdate(
-          WorldState.snapshot()
-        );
-    }
-
-    /**
-     * ========================================================
-     * DOM tracking ONLY
-     * ========================================================
-     */
-
-    activeExpertsDOM.set(
-      expertInstance.id,
-      {
-        element:
-          cardElement,
-        expert:
-          expertInstance,
-      }
-    );
-
-    closeModal();
-
-    console.log(
-      `[Engine] Expert injected: ${expertInstance.id}`
-    );
-
-  } catch (err) {
-
-    console.error(
-      "[Engine] Expert injection failed:",
-      err
-    );
-  }
-}
-
-/* ============================================================
- * Modal Expert Buttons
- * ========================================================== */
 
 document
   .querySelectorAll(
@@ -588,26 +418,209 @@ document
       "click",
       async () => {
 
-        const expertType =
-          button.dataset.expert;
+        /**
+         * ====================================================
+         * HARD SAFETY WRAPPER
+         * ====================================================
+         */
 
-        const modulePath =
-          EXPERT_MODULES[
+        try {
+
+          /**
+           * ==================================================
+           * Engine bootstrap
+           * ==================================================
+           */
+
+          await ensureEngine();
+
+          /**
+           * ==================================================
+           * Determine expert type
+           * ==================================================
+           */
+
+          const expertType =
+            button.dataset.expert;
+
+          let modulePath =
+            null;
+
+          switch (
             expertType
-          ];
+          ) {
 
-        if (!modulePath) {
+            case "rain":
+              modulePath =
+                "./expert_rain.js";
+              break;
 
-          console.warn(
-            `Unknown expert type: ${expertType}`
+            case "birds":
+              modulePath =
+                "./expert_birds.js";
+              break;
+
+            case "typing":
+              modulePath =
+                "./expert_typing.js";
+              break;
+
+            default:
+              throw new Error(
+                `Unknown expert: ${expertType}`
+              );
+          }
+
+          /**
+           * ==================================================
+           * Dynamic import
+           * ==================================================
+           */
+
+          const module =
+            await import(
+              modulePath
+            );
+
+          const ExpertClass =
+            module.default;
+
+          if (
+            typeof ExpertClass !==
+            "function"
+          ) {
+
+            throw new Error(
+              "Expert module missing default export."
+            );
+          }
+
+          /**
+           * ==================================================
+           * Instantiate
+           * ==================================================
+           */
+
+          const expertInstance =
+            new ExpertClass(
+              bus.context,
+              bus.getInputBus()
+            );
+
+          /**
+           * Safety identity.
+           */
+
+          if (
+            !expertInstance.id
+          ) {
+
+            expertInstance.id =
+              crypto.randomUUID();
+          }
+
+          /**
+           * ==================================================
+           * Register to router
+           * ==================================================
+           */
+
+          router.registerExpert(
+            expertInstance
           );
 
-          return;
-        }
+          /**
+           * ==================================================
+           * Track locally
+           * ==================================================
+           */
 
-        await injectExpert(
-          modulePath
-        );
+          activeExperts.set(
+            expertInstance.id,
+            expertInstance
+          );
+
+          /**
+           * ==================================================
+           * CRITICAL DOM FIX
+           * ==================================================
+           */
+
+          expertRack
+            .insertAdjacentHTML(
+              "beforeend",
+              expertInstance
+                .getUICard()
+            );
+
+          const cardElement =
+            expertRack
+              .lastElementChild;
+
+          if (
+            !cardElement
+          ) {
+
+            throw new Error(
+              "Failed to mount expert card."
+            );
+          }
+
+          /**
+           * ==================================================
+           * Bind local controls
+           * ==================================================
+           */
+
+          if (
+            typeof expertInstance
+              .bindCardControls ===
+            "function"
+          ) {
+
+            expertInstance
+              .bindCardControls(
+                cardElement
+              );
+          }
+
+          /**
+           * ==================================================
+           * Hydrate world state
+           * ==================================================
+           */
+
+          if (
+            typeof expertInstance
+              .onWorldStateUpdate ===
+            "function"
+          ) {
+
+            expertInstance
+              .onWorldStateUpdate(
+                WorldState.snapshot()
+              );
+          }
+
+          console.log(
+            `[Engine] Injected expert: ${expertInstance.id}`
+          );
+
+        } catch (err) {
+
+          /**
+           * ==================================================
+           * NO SILENT FAILURES
+           * ==================================================
+           */
+
+          alert(
+            "ERROR: " +
+            err.message
+          );
+
+          console.error(err);
+        }
       }
     );
   });
@@ -615,10 +628,6 @@ document
 /* ============================================================
  * Runtime Code Injection
  * ========================================================== */
-
-/**
- * Runtime ES6 expert injection.
- */
 
 injectCodeBtn
   ?.addEventListener(
@@ -654,7 +663,7 @@ export default class MyExpert {
 
         /**
          * ====================================================
-         * Blob Module
+         * Blob module
          * ====================================================
          */
 
@@ -674,7 +683,7 @@ export default class MyExpert {
 
         /**
          * ====================================================
-         * Dynamic Import
+         * Dynamic import
          * ====================================================
          */
 
@@ -694,7 +703,7 @@ export default class MyExpert {
         ) {
 
           throw new Error(
-            "Injected module missing default export."
+            "Injected code missing default export."
           );
         }
 
@@ -711,10 +720,12 @@ export default class MyExpert {
           );
 
         /**
-         * Safety identity.
+         * Safety ID.
          */
 
-        if (!expertInstance.id) {
+        if (
+          !expertInstance.id
+        ) {
 
           expertInstance.id =
             crypto.randomUUID();
@@ -722,7 +733,7 @@ export default class MyExpert {
 
         /**
          * ====================================================
-         * Register to Router
+         * Register
          * ====================================================
          */
 
@@ -730,38 +741,41 @@ export default class MyExpert {
           expertInstance
         );
 
-        /**
-         * ====================================================
-         * UI Injection
-         * ====================================================
-         */
-
-        const wrapper =
-          document.createElement(
-            "div"
-          );
-
-        wrapper.innerHTML =
+        activeExperts.set(
+          expertInstance.id,
           expertInstance
-            .getUICard()
-            .trim();
-
-        const cardElement =
-          wrapper.firstElementChild;
-
-        if (!cardElement) {
-
-          throw new Error(
-            "Injected expert card invalid."
-          );
-        }
-
-        expertRack.appendChild(
-          cardElement
         );
 
         /**
-         * Bind controls.
+         * ====================================================
+         * DOM FIX
+         * ====================================================
+         */
+
+        expertRack
+          .insertAdjacentHTML(
+            "beforeend",
+            expertInstance
+              .getUICard()
+          );
+
+        const cardElement =
+          expertRack
+            .lastElementChild;
+
+        if (
+          !cardElement
+        ) {
+
+          throw new Error(
+            "Failed to mount injected expert."
+          );
+        }
+
+        /**
+         * ====================================================
+         * Bind controls
+         * ====================================================
          */
 
         if (
@@ -792,49 +806,29 @@ export default class MyExpert {
             );
         }
 
-        /**
-         * DOM tracking.
-         */
-
-        activeExpertsDOM.set(
-          expertInstance.id,
-          {
-            element:
-              cardElement,
-            expert:
-              expertInstance,
-          }
-        );
-
-        closeModal();
-
         console.log(
           "[Engine] Runtime expert injected."
         );
 
       } catch (err) {
 
-        console.error(
-          "[Engine] Runtime injection failed:",
-          err
+        alert(
+          "ERROR: " +
+          err.message
         );
 
-        alert(
-          "Expert injection failed. Check console."
-        );
+        console.error(err);
       }
     }
   );
 
 /* ============================================================
- * Remove Expert Delegation
+ * Remove Delegation
  * ========================================================== */
 
 /**
- * Handles ALL dynamic experts.
- *
- * CRITICAL FIX:
- * router.unregisterExpert(id)
+ * CRITICAL:
+ * Delegated removal handler.
  */
 
 expertRack
@@ -843,20 +837,21 @@ expertRack
     (e) => {
 
       /**
-       * Remove button.
+       * Remove button only.
        */
 
       if (
-        !e.target.classList.contains(
-          "remove-btn"
-        )
+        !e.target.classList
+          .contains(
+            "remove-btn"
+          )
       ) {
 
         return;
       }
 
       /**
-       * Closest card.
+       * Card.
        */
 
       const card =
@@ -880,47 +875,42 @@ expertRack
       }
 
       /**
-       * DOM registry.
+       * Runtime instance.
        */
 
-      const tracked =
-        activeExpertsDOM.get(id);
+      const expert =
+        activeExperts.get(id);
 
       /**
-       * Lifecycle cleanup.
+       * Cleanup lifecycle.
        */
 
-      if (tracked?.expert) {
+      if (expert) {
 
         try {
 
           if (
-            typeof tracked
-              .expert
+            typeof expert
               .destroy ===
             "function"
           ) {
 
-            tracked
-              .expert
-              .destroy();
+            expert.destroy();
           }
 
         } catch (err) {
 
           console.warn(
-            "[Engine] Expert destroy failed:",
+            "[Engine] Destroy failed:",
             err
           );
         }
       }
 
       /**
-       * ========================================================
-       * CRITICAL FIX
-       * ========================================================
-       *
-       * Remove from router.
+       * ======================================================
+       * Remove from router
+       * ======================================================
        */
 
       if (
@@ -936,21 +926,21 @@ expertRack
       }
 
       /**
-       * Remove local DOM tracking.
+       * Remove local tracking.
        */
 
-      activeExpertsDOM.delete(
+      activeExperts.delete(
         id
       );
 
       /**
-       * Remove UI.
+       * Remove DOM.
        */
 
       card.remove();
 
       console.log(
-        `[Engine] Expert removed: ${id}`
+        `[Engine] Removed expert: ${id}`
       );
     }
   );
@@ -964,10 +954,6 @@ pressureValue.textContent =
     pressureSlider?.value || 0
   ).toFixed(2);
 
-/**
- * Initial WorldState.
- */
-
 WorldState.setAtmosphericPressure(
   Number(
     pressureSlider?.value || 0
@@ -979,18 +965,12 @@ WorldState.setEnclosure(
   "Open"
 );
 
-/**
- * Initial sync.
- */
-
-broadcastWorldState();
-
 /* ============================================================
- * Gesture-Based Early Unlock
+ * Gesture Unlock
  * ========================================================== */
 
 /**
- * Mobile browser helper.
+ * Helps mobile browsers.
  */
 
 window.addEventListener(
